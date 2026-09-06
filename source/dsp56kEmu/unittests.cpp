@@ -1070,6 +1070,52 @@ namespace dsp56k
 
 	void UnitTests::clb()
 	{
+		// DSP56300FM Rev. 5, 13-42: the signed count determines N/Z;
+		// all flags other than N/Z/V are preserved. Check both aliased and
+		// separate destinations, whose prior value must not determine N.
+		const auto testFlags = [&](const uint64_t source, const int count,
+			const bool same, const bool sourceB)
+		{
+			const bool destinationB = same ? sourceB : !sourceB;
+			runTest([&]()
+			{
+				dsp.setALU(sourceB, TReg56(static_cast<TReg56::MyType>(source)));
+				dsp.setALU(!sourceB, TReg56(static_cast<TReg56::MyType>(0xffffff00000000ull)));
+				dsp.regs().sr.var = 0xff;
+				emit(sourceB ? (same ? "clb b,b" : "clb b,a") : (same ? "clb a,a" : "clb a,b"));
+			}, [&]()
+			{
+				const auto expected = (static_cast<uint64_t>(count) << 24) & 0xffffffffffffffull;
+				verify((destinationB ? dsp.aluB() : dsp.aluA()) == expected);
+				if(!same) verify((sourceB ? dsp.aluB() : dsp.aluA()) == source);
+				verify((dsp.getSR().var & 0xff) == (0xf1u | (count < 0 ? 8u : 0u) | (count == 0 ? 4u : 0u)));
+			});
+		};
+		for(const bool same : {false, true})
+		for(const bool sourceB : {false, true})
+		{
+			testFlags(0, 0, same, sourceB);
+			testFlags(0xffffffffffffffull, -47, same, sourceB);
+			for(unsigned bit = 0; bit < 55; ++bit)
+			{
+				testFlags(uint64_t(1) << bit, static_cast<int>(bit) - 46, same, sourceB);
+				testFlags((~(uint64_t(1) << bit)) & 0xffffffffffffffull,
+					static_cast<int>(bit) - 46, same, sourceB);
+			}
+		}
+
+		runTest([&]()
+		{
+			dsp.setALU(false, TReg56(static_cast<TReg56::MyType>(0xfc000000000000ull)));
+			dsp.regs().sr.var = 0;
+			emit("asr a"); // A=FE:000000:000000, E/U/N=1, C/Z/V=0.
+			emit("clb a,b"); // Seven leading ones => count +2, N/Z/V=0.
+		}, [&]()
+		{
+			verify(dsp.aluB() == 0x2000000);
+			verify((dsp.getSR().var & 0xff) == 0x30);
+		});
+
 		auto testClb = [&](const uint64_t _a, const uint64_t _b)
 		{
 			runTest([&]()
