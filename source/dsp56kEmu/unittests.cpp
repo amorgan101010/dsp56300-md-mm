@@ -628,14 +628,14 @@ namespace dsp56k
 	{
 		// 56-bit signed arithmetic fits in int64_t here, including 2*D+S.
 		constexpr uint64_t mask = 0x00ffffffffffffffull;
-		const auto signed56 = [](uint64_t v) -> int64_t
+		const auto signed56 = [](uint64_t _value) -> int64_t
 		{
-			return v < (1ull << 55) ? int64_t(v) : int64_t(v) - (1ll << 56);
+			return _value < (1ull << 55) ? int64_t(_value) : int64_t(_value) - (1ll << 56);
 		};
-		for(const uint64_t destination : {0ull, 1ull, mask, 1ull << 54, 1ull << 55,
-			0x015a7b3f37c905ull})
-		for(const uint64_t source : {0ull, 1ull, mask, (1ull << 55) - 1,
-			1ull << 55, 0xd55ad0723547d7ull})
+		constexpr uint64_t destinations[] = {0, 1, mask, 1ull << 54, 1ull << 55, 0x015a7b3f37c905ull};
+		constexpr uint64_t sources[] = {0, 1, mask, (1ull << 55) - 1, 1ull << 55, 0xd55ad0723547d7ull};
+		for(const auto destination : destinations)
+		for(const auto source : sources)
 		for(const bool ab : {false, true})
 		for(const auto initialLimit : {0u, static_cast<unsigned>(CCR_L)})
 		{
