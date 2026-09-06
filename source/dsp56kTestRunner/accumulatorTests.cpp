@@ -371,6 +371,75 @@ int runSequenceTests()
 	return failures ? 1 : 0;
 }
 
+// DIV preserves E/U/N/Z and derives V from the left shift, before the
+// add/subtract. Include the actual MD mixer dividend/divisor from the trace.
+int runDivideFlagTests()
+{
+	constexpr uint64_t mask56 = 0x00ffffffffffffffULL;
+	struct Input { uint64_t dividend; uint32_t divisor; uint32_t sr; unsigned iterations = 24; };
+	const Input inputs[] = {
+		{0x0821d0000000ULL, 0x40d249, 0x8050},
+		{0x0821d0000000ULL, 0x40d249, 0x8052},
+		{0x100000000000ULL, 0x400000, CCR_C},
+		{0x100000000000ULL, 0xc00000, CCR_E | CCR_U | CCR_N | CCR_Z},
+		{1, 0x7fffff, CCR_V},
+		{1, 0x800000, CCR_L | CCR_V},
+		// A single shift can overflow outside the valid fractional-quotient
+		// range; assert its specified V/L behavior without claiming a quotient.
+		{0x40000000000000ULL, 0x400000, CCR_N, 1},
+		{0x80000000000000ULL, 0x400000, 0, 1},
+	};
+	unsigned total = 0, failures = 0;
+	Assembler assembler;
+	for(const auto& input : inputs) for(bool useB : {false, true})
+		for(bool optimize : {false, true}) for(bool jit : {false, true})
+		{
+			auto machine = std::make_unique<Machine>();
+			auto config = machine->dsp.getJit().getConfig();
+			config.enableOptimizer = optimize;
+			machine->dsp.getJit().setConfig(config);
+			auto& r = machine->dsp.regs();
+			(useB ? r.b : r.a).var = static_cast<int64_t>(input.dividend << 8);
+			r.x.var = input.divisor;
+			r.sr.var = input.sr;
+			const auto op = assembler.assemble(useB ? "div x0,b" : "div x0,a");
+			if(!op.success()) throw std::string("DIV assembly failed");
+			for(unsigned step = 0; step < input.iterations; ++step)
+				machine->mem.set(MemArea_P, 0x100 + step, op.word[0]);
+			machine->dsp.setPC(0x100);
+			machine->dsp.getJit().checkModeChange();
+			uint64_t expected = input.dividend;
+			uint32_t status = input.sr;
+			const uint64_t divisor = (uint64_t(input.divisor) << 24)
+				| ((input.divisor & 0x800000) ? 0xff000000000000ULL : 0);
+			for(unsigned step = 0; step < input.iterations; ++step)
+			{
+				const bool overflow = ((expected >> 55) ^ (expected >> 54)) & 1;
+				const bool add = ((expected >> 55) ^ (input.divisor >> 23)) & 1;
+				expected = ((expected << 1) | ((status & CCR_C) != 0)) & mask56;
+				expected = (add ? expected + divisor : expected - divisor) & mask56;
+				status = (status & ~(CCR_V | CCR_C))
+					| (overflow ? CCR_V | CCR_L : 0) | ((expected >> 55) ? 0 : CCR_C);
+				if(jit)
+					for(unsigned attempt = 0; attempt < 4 && machine->dsp.getPC() == 0x100 + step; ++attempt)
+						machine->dsp.execJit();
+				else machine->dsp.execInterpreter();
+				const auto actual = uint64_t((useB ? r.b : r.a).var) >> 8;
+				const auto sr = machine->dsp.getSR().var;
+				++total;
+				if(actual != expected || sr != status || machine->dsp.getPC() != 0x101 + step)
+				{
+					if(++failures <= 8)
+						std::cerr << "DIV flag failure jit=" << jit << " optimizer=" << optimize
+							<< " step=" << step << " actual=" << std::hex << actual << '/' << sr
+							<< " expected=" << expected << '/' << status << std::dec << '\n';
+				}
+			}
+		}
+	std::cerr << "DIV expected-value cases: " << total << " failures: " << failures << '\n';
+	return failures ? 1 : 0;
+}
+
 int main()
 {
 	// Keep generated assembly out of CI logs; failures are reported on stderr.
@@ -379,7 +448,8 @@ int main()
 		const int expected = runExpectedTests();
 		const int differential = runDifferentialTests();
 		const int sequences = runSequenceTests();
-		return expected || differential || sequences ? 1 : 0;
+		const int divide = runDivideFlagTests();
+		return expected || differential || sequences || divide ? 1 : 0;
 	} catch(const std::string& error) { std::cerr << error << '\n'; }
 	catch(const std::exception& error) { std::cerr << error.what() << '\n'; }
 	return 1;

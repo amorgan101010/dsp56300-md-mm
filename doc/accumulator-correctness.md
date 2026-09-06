@@ -40,3 +40,28 @@ As a negative control, the same expanded tests were run with the archived core b
 Coverage remains bounded: reserved scaling combinations, arithmetic saturation/16-bit modes, every opcode and arbitrary instruction sequences are not exhaustively verified.
 
 Explicit INC/DEC cases also cross bit 47 without crossing bit 55, proving that a field-boundary transition is not a full-accumulator carry or borrow. A rotate/branch case independently checks ROL negative-flag behavior.
+
+## September 7: DIV overflow condition across host flag updates
+
+Tracing the first remaining ARM/x86 register difference located it in MD's mixer
+DIV loop. The accumulator, carry and cycle counts agreed, but x86 sometimes
+reported V=1 where ARM reported V=0. The x86 V/L helper cleared the emulated V
+with a host AND before consuming the arithmetic condition. That AND overwrote
+host parity/zero flags, so the subsequent condition could describe SR rather
+than the arithmetic result. Capturing the condition before clearing V fixes it.
+The same helper serves standalone and repeated DIV and other overflow updates.
+
+The manual's DIV condition-code definition (section 13, page 13-54) requires V
+from the change in the accumulator MSB during the left shift, C from the final
+sign, sticky L, and preservation of E/U/N/Z. A new independent integer oracle
+checks 1,168 results across both accumulators, both execution engines and both
+optimizer settings. This includes 24-iteration sequences with the captured
+firmware operands, positive/negative divisors and initially set flags. Two
+single-iteration cases assert defined V/L behavior outside the valid quotient
+range, without claiming a valid quotient for those operands.
+
+Before the correction, the 1,152 valid-sequence checks produced 352 x86 failures
+and zero ARM failures. All 1,168 final checks pass locally on both architectures,
+as do the existing explicit, differential and sequence groups. The phase drift
+itself was separately traced to a host scheduler deadline conversion, addressed
+in the plugin integration PR rather than this DSP dependency.
