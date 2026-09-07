@@ -115,3 +115,10 @@ dsp56kAccumulatorTests --manual-interpreter-only
 Use `--manual-only` for just the new checks on both execution engines; the
 normal invocation includes them along with all prior accumulator regressions.
 The existing CI target therefore picks up the new coverage automatically.
+
+The AppleClang 15 CI job exposed incorrect E expectations from the oracle's
+per-bit boolean reduction for some negative results; both emulators returned
+the manual-correct flag. The oracle now tests whether the raw integer portion
+is all zero or all one, and six literal flag expectations independently check
+that calculation before any DSP execution. Local AppleClang 16 did not
+reproduce the older-toolchain failure. This follow-up changes tests only.

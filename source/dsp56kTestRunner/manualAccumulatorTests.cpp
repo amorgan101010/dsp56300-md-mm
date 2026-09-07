@@ -26,9 +26,11 @@ uint32_t arithmeticFlags(uint64_t result, uint32_t before, bool overflow, bool c
 {
 	uint32_t sr = before & ~(CCR_E | CCR_U | CCR_N | CCR_Z | CCR_V | CCR_C);
 	const unsigned highFraction = 47 + scaling(before);
-	bool extension = false;
-	for(unsigned i = highFraction; i < 55; ++i) extension |= bit(result, i) != bit(result, 55);
-	if(extension) sr |= CCR_E;
+	// The integer portion must be entirely zero or entirely one. Express
+	// that directly; keep this oracle independent of aligned ALU helpers.
+	const uint64_t integer = result >> highFraction;
+	const uint64_t allOnes = (uint64_t{1} << (56 - highFraction)) - 1;
+	if(integer != 0 && integer != allOnes) sr |= CCR_E;
 	if(bit(result, highFraction) == bit(result, highFraction - 1)) sr |= CCR_U;
 	if(bit(result, 55)) sr |= CCR_N;
 	if(result == 0) sr |= CCR_Z;
@@ -327,6 +329,17 @@ void transfers(bool interpreterOnly)
 
 int runManualAccumulatorTests(bool interpreterOnly)
 {
+	// Literal sanity checks also protect the oracle itself across toolchains.
+	// The older AppleClang CI build produced incorrect E expectations with
+	// the previous per-bit boolean reduction, despite correct emulator output.
+	struct OracleCase { uint64_t result; uint32_t mode; uint32_t flags; };
+	const OracleCase oracleCases[] = {{0, 0, 0x14}, {mask56, 0, 0x18},
+		{0xc0000000000000, 0, 0x38}, {0xff800000000000, SR_S1, 0x838},
+		{0xff800000000000, 0, 0x08}, {0x00800000000000, 0, 0x20}};
+	for(const auto& test : oracleCases)
+		if(arithmeticFlags(test.result, test.mode, false, false) != test.flags)
+			throw std::string("Manual flag oracle failed its literal sanity check");
+
 	total = failures = displayed = 0;
 	divideContexts(interpreterOnly);
 	std::cerr << "Manual DIV contexts: " << total << " cases, " << failures << " failures\n";
