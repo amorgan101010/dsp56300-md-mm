@@ -194,9 +194,9 @@ namespace dsp56k
 
 		const TInt64 d64 = aluSignextend(dSrc);
 
-		sr_toggle( CCR_C, _shiftAmount && ((d64 & (TInt64(1)<<(56 + g_aluShift - _shiftAmount))) != 0) );
+		sr_toggle( CCR_C, _shiftAmount && ((uint64_t(d64) & (uint64_t{1} << (56 + g_aluShift - _shiftAmount))) != 0) );
 
-		const TInt64 res = d64 << _shiftAmount;
+		const TInt64 res = static_cast<TInt64>(uint64_t(d64) << _shiftAmount);
 
 		TReg56& d = abDst ? reg.b : reg.a;
 
@@ -821,15 +821,17 @@ namespace dsp56k
 		
 		const auto c = msbOld != bitvalue<23>(s24);
 		
-		d.var <<= 1;
-		d.var |= static_cast<TInt64>(sr_test_noCache(CCR_C) ? 1 : 0) << g_aluShift;	// carry enters at the accumulator LSB
+		// DIV wraps at the accumulator width. Unsigned host arithmetic defines
+		// the shift and add/subtract even for negative intermediate remainders.
+		const uint64_t shifted = (uint64_t(d.var) << 1)
+			| (uint64_t(sr_test_noCache(CCR_C) ? 1 : 0) << g_aluShift);
+		d.var = static_cast<TInt64>(shifted);
 
 		const auto msbNew = bitvalue<55 + g_aluShift>(d);
 
-		if( c )
-			d.var = ((d.var + (signextend<TInt64,24>(s24.var) << (24 + g_aluShift)) )&static_cast<TInt64>(0x00ffffffff000000ull << g_aluShift)) | (d.var & (0xffffffll << g_aluShift));
-		else
-			d.var = ((d.var - (signextend<TInt64,24>(s24.var) << (24 + g_aluShift)) )&static_cast<TInt64>(0x00ffffffff000000ull << g_aluShift)) | (d.var & (0xffffffll << g_aluShift));
+		const int64_t divisor = (s24.var & 0xffffff) - ((s24.var & 0x800000) ? 0x1000000 : 0);
+		const uint64_t alignedDivisor = uint64_t(divisor) << (24 + g_aluShift);
+		d.var = static_cast<TInt64>(c ? shifted + alignedDivisor : shifted - alignedDivisor);
 
 		sr_toggle( CCRB_C, !bitvalue<55 + g_aluShift>(d) );	// Set if bit 55 of the result is cleared.
 		sr_toggle( CCRB_V, msbNew != msbOld );	// Set if the MSB of the destination operand is changed as a result of the instructions left shift operation.

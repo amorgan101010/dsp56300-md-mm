@@ -440,16 +440,24 @@ int runDivideFlagTests()
 	return failures ? 1 : 0;
 }
 
-int main()
+int runManualAccumulatorTests(bool interpreterOnly);
+
+int main(int argc, char** argv)
 {
 	// Keep generated assembly out of CI logs; failures are reported on stderr.
 	Logging::setLogFunc([](const std::string&) {});
 	try {
+		if(argc == 2 && std::string(argv[1]) == "--manual-interpreter-only")
+			return runManualAccumulatorTests(true);
+		if(argc == 2 && std::string(argv[1]) == "--manual-only")
+			return runManualAccumulatorTests(false);
+		if(argc != 1) throw std::string("Unknown accumulator-test option");
 		const int expected = runExpectedTests();
 		const int differential = runDifferentialTests();
 		const int sequences = runSequenceTests();
 		const int divide = runDivideFlagTests();
-		return expected || differential || sequences || divide ? 1 : 0;
+		const int manual = runManualAccumulatorTests(false);
+		return expected || differential || sequences || divide || manual ? 1 : 0;
 	} catch(const std::string& error) { std::cerr << error << '\n'; }
 	catch(const std::exception& error) { std::cerr << error.what() << '\n'; }
 	return 1;

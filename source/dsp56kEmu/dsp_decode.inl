@@ -629,6 +629,7 @@ namespace dsp56k
 		{
 			// Shift in the sign-extended 56-bit domain so scale-up cannot wrap
 			// the host sign bit before the 48-bit limiter sees the value.
+			sr_s_update();
 			int64_t value = (_lll == 4 ? reg.a.var : reg.b.var) >> g_aluShift;
 			if(sr_test_noCache(SR_S1)) value *= 2;
 			else if(sr_test_noCache(SR_S0)) value >>= 1;

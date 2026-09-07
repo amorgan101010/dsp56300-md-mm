@@ -65,3 +65,53 @@ and zero ARM failures. All 1,168 final checks pass locally on both architectures
 as do the existing explicit, differential and sequence groups. The phase drift
 itself was separately traced to a host scheduler deadline conversion, addressed
 in the plugin integration PR rather than this DSP dependency.
+
+## Manual boundary and execution-context validation
+
+`manualAccumulatorTests.cpp` adds 13,664 independent expected-state checks:
+7,680 DIV contexts, 64 reduced status-bit branch cases, 4,224 arithmetic/shift
+boundaries, 160 rotates and 1,536 full-accumulator long stores. DIV runs both
+accumulators with optimizer on/off, one-instruction blocks, an unrolled block,
+and REP. No intermediate SR reads occur; final registers/SR and an immediately
+following branch are checked. The unrolled JIT case also checks that the first
+advancing dispatch reaches beyond the DIV sequence. Cases include pending
+flags from preceding TST, both divisor signs, incoming C/V/L combinations and
+single-step overflow probes outside the valid quotient range.
+
+Boundary oracles use raw DSP bit positions and repeated one-bit shifts, not
+interpreter/JIT arithmetic helpers. They check every defined CCR flag, sticky
+S/L, ignored upper shift-control bits, preserved accumulator fields, unchanged
+source/unrelated registers and exact memory values. Transfer cases cover both
+sides of positive/negative limiting thresholds in all three scaling modes and
+growth detected in either accumulator. They do not cover arithmetic-saturation
+or 16-bit arithmetic modes.
+
+This exposed two shared backend omissions beyond the original cross-CPU fixes:
+
+- JSET/JCLR reading SR inside the conditional helper could materialize pending
+  flags but save them only on the taken path. Reading the operand before entering
+  that helper preserves the flags on both paths. `TST; JSET #1,SR,...` reproduces
+  this without DIV; the relative bit-branch helper already reads outside its
+  conditional helper.
+- Full A/B long stores omitted the sticky S growth detector specified by table
+  5-1 (page 5-14), independently of transfer limiting/L. The interpreter and both
+  JITs now evaluate it before scaling. Raw A10/B10 moves retain their raw behavior.
+  JIT evaluation precedes output-temp allocation to stay within x86's three-temp
+  budget. This is targeted long-store coverage, not an audit of every S-affecting
+  instruction.
+
+A focused UBSan build also found full-SR reset masks cast to the narrower CCR
+mask enum, and signed left shifts in interpreter DIV/ASL. Reset uses SRMask;
+DIV/ASL wrap with unsigned host arithmetic. DIV divisor alignment and remainder
+addition/subtraction likewise use unsigned arithmetic. All 4,256 focused
+interpreter cases then pass with `-fsanitize=undefined
+-fno-sanitize-recover=undefined`. This instruments host C++, not generated JIT
+machine code. The interpreter-only invocation is:
+
+```sh
+dsp56kAccumulatorTests --manual-interpreter-only
+```
+
+Use `--manual-only` for just the new checks on both execution engines; the
+normal invocation includes them along with all prior accumulator regressions.
+The existing CI target therefore picks up the new coverage automatically.
