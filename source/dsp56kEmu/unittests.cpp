@@ -789,34 +789,34 @@ namespace dsp56k
 		// Independent bit-by-bit ASL oracle (DSP56300FM 13-15).
 		for(const uint64_t input : {0ull, 1ull, 0x0080000000000000ull,
 			0x0040000000000000ull, 0x00ffffffffffffffull})
-		for(const unsigned count : {0u, 1u, 8u, 55u})
-		for(const bool registerCount : {false, true})
-		{
-			auto expected = input;
-			bool carry = false, overflow = false;
-			for(unsigned bit = 0; bit < count; ++bit)
-			{
-				carry = (expected >> 55) != 0;
-				expected = (expected << 1) & 0x00ffffffffffffffull;
-				overflow |= carry != static_cast<bool>(expected >> 55);
-			}
-			runTest([&]()
-			{
-				dsp.regs().sr.var = CCR_C | CCR_V;
-				dsp.setALU(false, TReg56(input));
-				dsp.x0(count);
-				const auto instruction = std::string("asl ") +
-					(registerCount ? "x0" : "#" + std::to_string(count)) + ",a,b";
-				emit(instruction.c_str());
-			}, [&]()
-			{
-				verify(dsp.aluA().var == input);
-				verify(dsp.aluB().var == expected);
-				verify(static_cast<bool>(dsp.sr_test(CCR_C)) == carry);
-				verify(static_cast<bool>(dsp.sr_test(CCR_V)) == overflow);
-				verify(static_cast<bool>(dsp.sr_test(CCR_L)) == overflow);
-			});
-		}
+			for(const unsigned count : {0u, 1u, 8u, 55u})
+				for(const bool registerCount : {false, true})
+				{
+					auto expected = input;
+					bool carry = false, overflow = false;
+					for(unsigned bit = 0; bit < count; ++bit)
+					{
+						carry = (expected >> 55) != 0;
+						expected = (expected << 1) & 0x00ffffffffffffffull;
+						overflow |= carry != static_cast<bool>(expected >> 55);
+					}
+					runTest([&]()
+					{
+						dsp.regs().sr.var = CCR_C | CCR_V;
+						dsp.setALU(false, TReg56(input));
+						dsp.x0(count);
+						const auto instruction = std::string("asl ") +
+							(registerCount ? "x0" : "#" + std::to_string(count)) + ",a,b";
+						emit(instruction.c_str());
+					}, [&]()
+					{
+						verify(dsp.aluA().var == input);
+						verify(dsp.aluB().var == expected);
+						verify(static_cast<bool>(dsp.sr_test(CCR_C)) == carry);
+						verify(static_cast<bool>(dsp.sr_test(CCR_V)) == overflow);
+						verify(static_cast<bool>(dsp.sr_test(CCR_L)) == overflow);
+					});
+				}
 
 		runTest([&]()
 		{
@@ -904,33 +904,33 @@ namespace dsp56k
 		// a zero count. Use an unsigned 56-bit oracle, not another backend.
 		for(const uint64_t value : {0x0000000000000001ull, 0x00ffffffffffffffull,
 			0x0080000000000000ull, 0x0055aa55aa55aa55ull})
-		for(const unsigned count : {0u, 1u, 7u, 8u, 16u, 24u, 55u})
-		for(const bool destinationB : {false, true})
-		for(const bool registerCount : {false, true})
-		{
-			constexpr uint64_t mask = 0x00ffffffffffffffull;
-			auto expected = value >> count;
-			if(count && (value & (1ull << 55)))
-				expected |= mask ^ (mask >> count);
-			const bool carry = count && ((value >> (count - 1)) & 1);
-			runTest([&]()
-			{
-				dsp.regs().sr.var = CCR_C | CCR_V;
-				dsp.setALU(false, TReg56(value));
-				dsp.x0(count);
-				const auto instruction = std::string("asr ") +
-					(registerCount ? "x0" : "#" + std::to_string(count)) +
-					",a," + (destinationB ? "b" : "a");
-				emit(instruction.c_str());
-			}, [&]()
-			{
-				verify((destinationB ? dsp.aluB().var : dsp.aluA().var) == expected);
-				verify(static_cast<bool>(dsp.sr_test(CCR_C)) == carry);
-				verify(!dsp.sr_test(CCR_V));
-				if(destinationB)
-					verify(dsp.aluA().var == value);
-			});
-		}
+			for(const unsigned count : {0u, 1u, 7u, 8u, 16u, 24u, 55u})
+				for(const bool destinationB : {false, true})
+					for(const bool registerCount : {false, true})
+					{
+						constexpr uint64_t mask = 0x00ffffffffffffffull;
+						auto expected = value >> count;
+						if(count && (value & (1ull << 55)))
+							expected |= mask ^ (mask >> count);
+						const bool carry = count && ((value >> (count - 1)) & 1);
+						runTest([&]()
+						{
+							dsp.regs().sr.var = CCR_C | CCR_V;
+							dsp.setALU(false, TReg56(value));
+							dsp.x0(count);
+							const auto instruction = std::string("asr ") +
+								(registerCount ? "x0" : "#" + std::to_string(count)) +
+								",a," + (destinationB ? "b" : "a");
+							emit(instruction.c_str());
+						}, [&]()
+						{
+							verify((destinationB ? dsp.aluB().var : dsp.aluA().var) == expected);
+							verify(static_cast<bool>(dsp.sr_test(CCR_C)) == carry);
+							verify(!dsp.sr_test(CCR_V));
+							if(destinationB)
+								verify(dsp.aluA().var == value);
+						});
+					}
 
 		runTest([&]()
 		{
@@ -2364,24 +2364,24 @@ namespace dsp56k
 		// Only negating the most negative 56-bit value overflows.
 		for(const uint64_t value : {0ull, 1ull, 0x00ffffffffffffffull,
 			0x007fffffffffffffull, 0x0080000000000000ull})
-		for(const unsigned initial : {0u, unsigned(CCR_C | CCR_V), unsigned(CCR_L)})
-		for(const bool ab : {false, true})
-		{
-			const bool overflow = value == 0x0080000000000000ull;
-			runTest([&]()
-			{
-				dsp.regs().sr.var = initial;
-				dsp.setALU(ab, TReg56(value));
-				emit(ab ? "neg b" : "neg a");
-			}, [&]()
-			{
-				verify((ab ? dsp.aluB().var : dsp.aluA().var) ==
-					((0ull - value) & 0x00ffffffffffffffull));
-				verify(static_cast<bool>(dsp.sr_test(CCR_V)) == overflow);
-				verify(static_cast<bool>(dsp.sr_test(CCR_L)) == (overflow || (initial & CCR_L)));
-				verify(static_cast<bool>(dsp.sr_test(CCR_C)) == static_cast<bool>(initial & CCR_C));
-			});
-		}
+			for(const unsigned initial : {0u, unsigned(CCR_C | CCR_V), unsigned(CCR_L)})
+				for(const bool ab : {false, true})
+				{
+					const bool overflow = value == 0x0080000000000000ull;
+					runTest([&]()
+					{
+						dsp.regs().sr.var = initial;
+						dsp.setALU(ab, TReg56(value));
+						emit(ab ? "neg b" : "neg a");
+					}, [&]()
+					{
+						verify((ab ? dsp.aluB().var : dsp.aluA().var) ==
+							((0ull - value) & 0x00ffffffffffffffull));
+						verify(static_cast<bool>(dsp.sr_test(CCR_V)) == overflow);
+						verify(static_cast<bool>(dsp.sr_test(CCR_L)) == (overflow || (initial & CCR_L)));
+						verify(static_cast<bool>(dsp.sr_test(CCR_C)) == static_cast<bool>(initial & CCR_C));
+					});
+				}
 
 		runTest([&]()
 		{

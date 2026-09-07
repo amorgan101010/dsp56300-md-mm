@@ -1258,7 +1258,10 @@ namespace dsp56k
 		const auto ab = getFieldValue<Ror, Field_d>(op);
 		const uint32_t field = ab ? b1().var : a1().var;
 		const uint32_t result = (field >> 1) | (static_cast<uint32_t>(sr_val(CCRB_C)) << 23);
-		if(ab) b1(TReg24(result)); else a1(TReg24(result));
+		if(ab)
+			b1(TReg24(result));
+		else
+			a1(TReg24(result));
 		sr_toggle(CCR_N, (result & 0x800000) != 0);
 		sr_toggle(CCR_Z, result == 0);
 		sr_clear(CCR_V);

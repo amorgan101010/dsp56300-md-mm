@@ -279,7 +279,8 @@ namespace dsp56k
 		// aligned host register first can wrap its sign bit before saturation.
 		if constexpr (g_leftAlignedAlu)
 		{
-			if(_dst != _src) m_asm.mov(_dst, _src);
+			if(_dst != _src)
+				m_asm.mov(_dst, _src);
 			m_asm.sar(_dst, asmjit::Imm(g_aluBitOffset));
 		}
 		else
@@ -288,8 +289,10 @@ namespace dsp56k
 		const auto* mode = m_block.getMode();
 		if(mode)
 		{
-			if(mode->testSR(SRB_S1)) m_asm.shl(_dst, asmjit::Imm(1));
-			else if(mode->testSR(SRB_S0)) m_asm.sar(_dst, asmjit::Imm(1));
+			if(mode->testSR(SRB_S1))
+				m_asm.shl(_dst, asmjit::Imm(1));
+			else if(mode->testSR(SRB_S0))
+				m_asm.sar(_dst, asmjit::Imm(1));
 		}
 		else
 		{
