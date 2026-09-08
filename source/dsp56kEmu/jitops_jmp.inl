@@ -145,11 +145,14 @@ namespace dsp56k
 
 		const auto dddddd = getFieldValue<Inst,Field_DDDDDD>(op);
 
+		// Reading SR materializes deferred flags. Do it before If releases the
+		// register pool, so those writes survive both the taken and untaken path.
+		DspValue r(m_block);
+		decode_dddddd_read(r, dddddd);
+
 		DSPReg pc(m_block, PoolReg::DspPC, true, true);
 		If(m_block, m_blockRuntimeData, [&](const auto& _toFalse)
 		{
-			DspValue r(m_block);
-			decode_dddddd_read(r, dddddd);
 			bitTest<Inst>(op, r, BitValue, _toFalse);
 		}, [&]()
 		{

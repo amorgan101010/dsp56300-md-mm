@@ -581,6 +581,15 @@ namespace dsp56k
 	}
 	void JitOps::decode_LLL_read(TWord _lll, DspValue& x, DspValue& y)
 	{
+		if(_lll == 4 || _lll == 5)
+		{
+			// Full accumulator reads latch growth before scaling/limiting.
+			// Do this before allocating the two output temps: the x86 pool
+			// cannot also hold both temporaries used by the S-bit helper.
+			ccr_s_update(r64(m_dspRegs.getALU(0)));
+			ccr_s_update(r64(m_dspRegs.getALU(1)));
+		}
+
 		x.temp(DspValue::Temp24);
 		y.temp(DspValue::Temp24);
 
@@ -596,6 +605,8 @@ namespace dsp56k
 				m_asm.ubfx(r64(y), r64(a), asmjit::Imm(0 + g_aluBitOffset), asmjit::Imm(24));
 #else
 				m_dspRegs.getALU(r64(y), alu);
+				if constexpr (g_leftAlignedAlu)
+					m_asm.shr(r64(y), asmjit::Imm(g_aluBitOffset));
 				m_asm.ror(r64(x), r64(y), 24);
 				m_asm.and_(r32(x), asmjit::Imm(0xffffff));
 				m_asm.and_(r32(y), asmjit::Imm(0xffffff));
@@ -654,11 +665,13 @@ namespace dsp56k
 				m_asm.bfi(r64(r), r64(x), asmjit::Imm(24 + g_aluBitOffset), asmjit::Imm(24));
 				m_asm.bfi(r64(r), r64(y), asmjit::Imm(0 + g_aluBitOffset), asmjit::Imm(24));
 #else
-				m_asm.shr(r, asmjit::Imm(48));	// clear 48 LSBs
+				m_asm.shr(r, asmjit::Imm(48 + g_aluBitOffset)); // preserve accumulator extension
 				m_asm.shl(r, asmjit::Imm(24));
 				m_asm.or_(r, r64(x.get()));
 				m_asm.shl(r, asmjit::Imm(24));
 				m_asm.or_(r, r64(y.get()));
+				if constexpr (g_leftAlignedAlu)
+					m_asm.shl(r, asmjit::Imm(g_aluBitOffset));
 #endif
 			}
 			break;

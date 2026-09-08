@@ -291,11 +291,11 @@ namespace dsp56k
 		copyBitToCCR(_alu, 47 + g_aluBitOffset, CCRB_N);
 	}
 
-	void JitOps::ccr_n_update_by23(const JitReg64& _alu)
+	void JitOps::ccr_n_update_raw24(const JitReg64& _alu)
 	{
-		// Negative
+		// The input is an extracted 24-bit field, not an aligned accumulator.
 		// Set if the MSB of the result is set; otherwise, this bit is cleared.
-		copyBitToCCR(_alu, 23 + g_aluBitOffset, CCRB_N);
+		copyBitToCCR(_alu, 23, CCRB_N);
 	}
 
 	void JitOps::ccr_s_update(const JitReg64& _alu)
@@ -353,6 +353,11 @@ namespace dsp56k
 
 	void JitOps::ccr_vl_update(const asmjit::x86::CondCode _cc)
 	{
+		// Capture the arithmetic condition before clearing V: ccr_clear emits
+		// AND on SR, which overwrites the host flags (including parity for DIV).
+		const RegScratch r(m_block);
+		m_asm.set(_cc, r.get().r8());
+
 		// V has to be cleared first because it is overwritten; L must NOT be, it is sticky.
 		if(m_ccr_update_clear)
 			ccr_clear(CCR_V);
@@ -362,8 +367,6 @@ namespace dsp56k
 
 		// 0/1 -> 0x00/0xFF -> 0x00/(CCR_V|CCR_L), so one OR writes both bits. The per-bit path needs
 		// set+shl+or for V and then rol+and+or to copy V into L, six instructions instead of four.
-		const RegScratch r(m_block);
-		m_asm.set(_cc, r.get().r8());
 		m_asm.neg(r.get().r8());
 		m_asm.and_(r.get().r8(), asmjit::Imm(CCR_V | CCR_L));
 		m_asm.or_(m_dspRegs.getSR(JitDspRegs::ReadWrite).r8(), r.get().r8());
