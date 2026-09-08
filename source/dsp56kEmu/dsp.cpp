@@ -199,8 +199,8 @@ namespace dsp56k
 
 		reg.sz.var = 0xbadbad; // The SZ register is not initialized during hardware reset, and must be set, using a MOVEC instruction, prior to enabling the stack extension.
 
-		const CCRMask srClear	= static_cast<CCRMask>(SR_RM | SR_SM | SR_CE | SR_SA | SR_FV | SR_LF | SR_DM | SR_SC | SR_S0 | SR_S1 | 0xf);
-		const CCRMask srSet		= static_cast<CCRMask>(SR_CP0 | SR_CP1 | SR_I0 | SR_I1);
+		const SRMask srClear		= static_cast<SRMask>(SR_RM | SR_SM | SR_CE | SR_SA | SR_FV | SR_LF | SR_DM | SR_SC | SR_S0 | SR_S1 | 0xf);
+		const SRMask srSet		= static_cast<SRMask>(SR_CP0 | SR_CP1 | SR_I0 | SR_I1);
 
 		sr_clear( srClear );
 		sr_set	( srSet );
@@ -1293,20 +1293,16 @@ namespace dsp56k
 	// _____________________________________________________________________________
 	// alu_abs
 	//
-	void DSP::alu_abs( bool ab )
+	void DSP::alu_abs(bool ab)
 	{
 		TReg56& d = ab ? reg.b : reg.a;
-
-		TInt64 d64 = aluSignextend(d);
-
-		d64 = d64 < 0 ? -d64 : d64;
-
-		d.var = d64;
+		const int64_t old = aluSignextend(d);
+		// Unsigned arithmetic also defines the wraparound of the most negative value.
+		d.var = static_cast<int64_t>(old < 0 ? uint64_t(0) - static_cast<uint64_t>(old) : static_cast<uint64_t>(old));
 		aluMask(d);
-
 		sr_z_update(d);
-	//	sr_v_update(d);
-	//	sr_l_update_by_v();
+		sr_toggle(CCR_V, static_cast<uint64_t>(old) == (uint64_t(0x80000000000000) << g_aluShift));
+		sr_l_update_by_v();
 		setCCRDirty(ab, d, CCR_S | CCR_E | CCR_U | CCR_N);
 	}
 
@@ -1329,20 +1325,23 @@ namespace dsp56k
 	{
 		TReg56& d = ab ? reg.b : reg.a;
 
-		auto d64 = aluSignextend(d);
-		d64 = -d64;
-		
-		d.var = d64;
+		const auto value = static_cast<uint64_t>(d.var);
+		const bool overflow = value == (uint64_t(1) << (55 + g_aluShift));
+		// Unsigned subtraction also defines negation of the left-aligned
+		// minimum accumulator, whose signed 64-bit negation would overflow.
+		d.var = static_cast<TReg56::MyType>(uint64_t(0) - value);
 		aluMask(d);
 
 		sr_z_update(d);
-	//	TODO: how to update v? test in sim		sr_v_update(d);
+		sr_toggle(CCR_V, overflow);
 		sr_l_update_by_v();
 		setCCRDirty(ab, d, CCR_S | CCR_E | CCR_U | CCR_N);
 	}
 
 	void DSP::alu_not(const bool ab)
 	{
+		// Preserve E/U from preceding arithmetic before replacing logical N/Z/V.
+		updateDirtyCCR();
 		auto& d = ab ? reg.b.var : reg.a.var;
 
 		const auto masked = ~d & static_cast<TInt64>(0x00ffffff000000ull << g_aluShift);
