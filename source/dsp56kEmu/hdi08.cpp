@@ -79,6 +79,7 @@ namespace dsp56k
 		m_hostCommandArbitration = _enable;
 
 		// Reset the serializer when arbitration is reconfigured.
+		m_hostCommandAcceptedCycle.store(0, std::memory_order_release);
 		m_hostCommandPending.store(false, std::memory_order_release);
 		m_hostCommandInFlight.store(false, std::memory_order_release);
 		m_hostCommandHasQueued.store(false, std::memory_order_release);
@@ -132,6 +133,7 @@ namespace dsp56k
 			return;
 		// Servicing the vector clears HCP and moves the command to in-flight.
 		// The stack level provides an on-thread interrupt-return signal.
+		m_hostCommandAcceptedCycle.store(m_periph.getDSP().getCycles(), std::memory_order_release);
 		m_hostCommandPending.store(false, std::memory_order_release);
 
 		m_hcReturnSsIndex = m_periph.getDSP().ssIndex();
