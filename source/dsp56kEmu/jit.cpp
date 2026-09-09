@@ -117,6 +117,13 @@ namespace dsp56k
 
 	Jit::Jit(DSP& _dsp) : m_dsp(_dsp), m_trampoline(_dsp), m_rt(new JitRuntime())
 	{
+#ifdef __APPLE__
+		// One default table per DSP is prepared during construction. New DSP
+		// modes privately map it instead of filling large tables on first use.
+		const auto count = _dsp.memory().sizeP();
+		if (m_dispatchTemplate.allocate(count * sizeof(TJitFunc)))
+			std::uninitialized_fill_n(static_cast<TJitFunc*>(m_dispatchTemplate.data()), count, &funcCreate);
+#endif
 		m_emitters.reserve(16);
 		m_blockRuntimeDatas.reserve(0x10000);
 
