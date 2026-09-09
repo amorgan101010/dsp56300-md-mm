@@ -3,9 +3,12 @@
 #include <cassert>
 #include <cstring>
 #include <functional>
+#include <memory>
+#include <type_traits>
 #include <vector>
 
 #include "mmuhelper.h"
+#include "cowmemory.h"
 
 namespace dsp56k
 {
@@ -42,6 +45,22 @@ namespace dsp56k
 		MmuArray(MmuArray&&) = delete;
 		MmuArray& operator=(MmuArray&&) = delete;
 
+		// A prepared immutable dispatch template can be mapped into a new mode
+		// without clearing/copying a dense vector in the audio callback. Only
+		// trivial entries may use bytewise VM copies; owning metadata stays paged.
+		bool initFromTemplate(const CowMemory& _source)
+		{
+			static_assert(std::is_trivial_v<T> && std::is_trivially_copyable_v<T>);
+			clear();
+			if (!_source.size() || _source.size() % sizeof(T) || !m_cow.clone(_source))
+				return false;
+			m_ptr = static_cast<T*>(m_cow.data());
+			m_size = m_maxSize = _source.size() / sizeof(T);
+			// Begin trivial object lifetimes without overwriting the mapped bytes.
+			std::uninitialized_default_construct_n(m_ptr, m_size);
+			return true;
+		}
+
 		// Initialize the array
 		// _maxSize: maximum number of elements (defines virtual address range in MMU mode)
 		// _fillFunc: function to fill blocks with default values (called with pointer and count)
@@ -49,6 +68,7 @@ namespace dsp56k
 		// Returns true if MMU mode is active, false if using fallback
 		bool init(size_t _maxSize, FillFunc _fillFunc, size_t _blockSize = 16384)
 		{
+			clear();
 			m_fillFunc = std::move(_fillFunc);
 			m_maxSize = _maxSize;
 			m_blockSize = _blockSize;
@@ -136,6 +156,11 @@ namespace dsp56k
 		// Returns true if a remap was performed or a resize happened.
 		bool ensureBlockForIndex(size_t _index)
 		{
+			if (m_cow.data())
+			{
+				assert(_index < m_size);
+				return false;
+			}
 			if (m_useMmu)
 				return ensureBlockMmu(_index);
 			return ensureBlockFallback(_index);
@@ -144,6 +169,11 @@ namespace dsp56k
 		// Ensure size covers at least _index+1 entries (non-MMU grow, MMU no-op if in range)
 		bool ensureSize(size_t _index)
 		{
+			if (m_cow.data())
+			{
+				assert(_index < m_size);
+				return false;
+			}
 			if (m_useMmu)
 			{
 				if (_index < m_size)
@@ -159,6 +189,7 @@ namespace dsp56k
 
 		void clear()
 		{
+			m_cow.clear();
 			if (m_useMmu)
 			{
 				m_mmu.releaseAll();
@@ -231,6 +262,7 @@ namespace dsp56k
 		}
 
 		MmuHelper m_mmu;
+		CowMemory m_cow;
 		T* m_ptr = nullptr;
 		size_t m_size = 0;
 		size_t m_maxSize = 0;

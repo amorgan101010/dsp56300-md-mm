@@ -116,6 +116,7 @@ namespace dsp56k
 		void onFuncsResized(const JitBlockChain& _chain) const;
 
 		JitTrampoline& getTrampoline() { return m_trampoline; }
+		const CowMemory& getDispatchTemplate() const { return m_dispatchTemplate; }
 
 	private:
 		void checkPMemWrite() noexcept;
@@ -133,7 +134,7 @@ namespace dsp56k
 		std::unordered_map<JitDspMode, std::unique_ptr<JitBlockChain>, DspModeHash> m_chains;
 		JitBlockChain* m_currentChain = nullptr;
 
-		std::vector<TJitFunc> m_jitFuncs;
+		CowMemory m_dispatchTemplate;
 		std::set<TWord> m_volatileP;
 		std::map<TWord, TWord> m_loops;
 		std::set<TWord> m_loopEnds;
