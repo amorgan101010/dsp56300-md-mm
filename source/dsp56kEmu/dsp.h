@@ -137,6 +137,9 @@ namespace dsp56k
 			TInstructionFunc opAlu;
 		};
 
+		// Interpreter-only per-PC dispatch metadata. JIT builds leave this empty
+		// during normal execution; an explicit execInterpreter() call initializes
+		// it lazily so interpreter diagnostics remain supported in a JIT binary.
 		std::vector<OpcodeCacheEntry>	m_opcodeCache;
 
 		// Per-PC instruction cycle count, filled lazily in interpreter builds. JIT builds leave
@@ -283,6 +286,14 @@ namespace dsp56k
 
 		ASMJIT_FORCE_INLINE void execInterpreter() noexcept
 		{
+			// JIT-capable test and diagnostic binaries may explicitly exercise the
+			// interpreter even though the product path never does.
+			if constexpr(g_useJIT)
+			{
+				if(m_opcodeCache.empty())
+					clearOpcodeCache();
+			}
+
 			m_interruptFunc(this);
 
 #if DSP56300_DEBUGGER

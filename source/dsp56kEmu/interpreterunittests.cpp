@@ -8,11 +8,33 @@ namespace dsp56k
 {
 	InterpreterUnitTests::InterpreterUnitTests()
 	{
+		testOpcodeCacheAllocation();
 		testCCCC();
 		testSubr();
 		testCycleAccounting();
 		
 		runAllTests();
+	}
+
+	void InterpreterUnitTests::testOpcodeCacheAllocation()
+	{
+		if constexpr(g_useJIT)
+		{
+			verify(dsp.m_opcodeCache.empty());
+
+			// Explicit interpreter use in a JIT-capable diagnostic must lazily create
+			// the cache before the first dispatch and execute normally.
+			dsp.resetHW();
+			emitToMemory("nop", 0x100);
+			dsp.setPC(0x100);
+			dsp.execInterpreter();
+			verify(dsp.m_opcodeCache.size() == dsp.memory().sizeP());
+			verify(dsp.getPC() == 0x101);
+		}
+		else
+		{
+			verify(dsp.m_opcodeCache.size() == dsp.memory().sizeP());
+		}
 	}
 
 	void InterpreterUnitTests::testCycleAccounting()

@@ -27,6 +27,8 @@ namespace dsp56k
 	: m_checks({})
 	, m_logging(_logging)
 	{
+		programMemoryInvalidation();
+
 		runTest(&JitUnittests::conversion_build, &JitUnittests::conversion_verify);
 		runTest(&JitUnittests::signextend_build, &JitUnittests::signextend_verify);
 
@@ -236,6 +238,72 @@ namespace dsp56k
 		verify(dsp.getCycles() >= 32);
 		if(needsGrowth)
 			verify(dsp.getJitEntriesSize() > highPC);
+	}
+
+	void JitUnittests::programMemoryInvalidation()
+	{
+		DefaultMemoryValidator validator;
+		Peripherals56367 testPeripheralsY;
+		Peripherals56362 testPeripheralsX(&testPeripheralsY);
+		Memory testMemory(validator, 0x080000, 0x800000, 0x200000);
+		DSP testDsp(testMemory, &testPeripheralsX, &testPeripheralsY);
+		const auto emitTest = [&](const char* _text, TWord _pc)
+		{
+			const auto result = assembler.assemble(_text);
+			verify(result.success());
+			testDsp.memWriteP(_pc, result.word[0]);
+			if(result.wordCount > 1)
+				testDsp.memWriteP(_pc + 1, result.word[1]);
+			return result.wordCount > 1 ? _pc + 2 : _pc + 1;
+		};
+
+		// JIT-only construction leaves the interpreter dispatch cache absent. A
+		// P-memory replacement must nevertheless invalidate already-compiled code.
+		verify(testDsp.m_opcodeCache.empty());
+		constexpr TWord pc = 0x100;
+
+		testDsp.resetHW();
+		TWord next = emitTest("move #$11,x0", pc);
+		emitTest("bra >$100", next);
+		testDsp.setPC(pc);
+		testDsp.execUntilCycles(16);
+		verify(testDsp.x0() == 0x110000);
+		verify(testDsp.m_opcodeCache.empty());
+
+		emitTest("move #$22,x0", pc);
+		testDsp.regs().x.var = 0;
+		testDsp.setPC(pc);
+		testDsp.execUntilCycles(testDsp.getCycles() + 16);
+		verify(testDsp.x0() == 0x220000);
+		verify(testDsp.m_opcodeCache.empty());
+
+		// Exercise the other invalidation route: generated DSP code replaces an
+		// instruction in an already-compiled block. Jit::checkPMemWrite() must
+		// invalidate that block and notify the DSP while there is no interpreter
+		// cache to update.
+		constexpr TWord writerPC = 0x180;
+		constexpr TWord targetPC = 0x200;
+		const auto replacement = assembler.assemble("move #$44,y0");
+		verify(replacement.success() && replacement.wordCount == 1);
+		testDsp.resetHW();
+		next = emitTest("move #$33,y0", targetPC);
+		emitTest("bra >$200", next);
+		testDsp.setPC(targetPC);
+		testDsp.execUntilCycles(testDsp.getCycles() + 16);
+		verify(testDsp.y0() == 0x330000);
+
+		testDsp.x0(replacement.word[0]);
+		testDsp.regs().r[0].var = targetPC;
+		next = emitTest("move x0,p:(r0)", writerPC);
+		emitTest("bra >$180", next);
+		testDsp.setPC(writerPC);
+		testDsp.execUntilCycles(testDsp.getCycles() + 16);
+		verify(testDsp.memRead(MemArea_P, targetPC) == replacement.word[0]);
+		testDsp.y0(0);
+		testDsp.setPC(targetPC);
+		testDsp.execUntilCycles(testDsp.getCycles() + 16);
+		verify(testDsp.y0() == 0x440000);
+		verify(testDsp.m_opcodeCache.empty());
 	}
 
 	void JitUnittests::conversion_build()
