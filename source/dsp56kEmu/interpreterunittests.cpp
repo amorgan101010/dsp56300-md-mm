@@ -2,6 +2,7 @@
 
 #include "agu.h"
 #include "dsp.h"
+#include "dspBootCode.h"
 #include "memory.h"
 
 namespace dsp56k
@@ -9,6 +10,7 @@ namespace dsp56k
 	InterpreterUnitTests::InterpreterUnitTests()
 	{
 		testOpcodeCacheAllocation();
+		testBootOverwriteInvalidation();
 		testCCCC();
 		testSubr();
 		testCycleAccounting();
@@ -35,6 +37,34 @@ namespace dsp56k
 		{
 			verify(dsp.m_opcodeCache.size() == dsp.memory().sizeP());
 		}
+	}
+
+	void InterpreterUnitTests::testBootOverwriteInvalidation()
+	{
+		constexpr TWord pc = 0x100;
+
+		// Resolve and cache NOP through the interpreter before the boot loader
+		// replaces the same P-memory address with a different instruction.
+		dsp.resetHW();
+		emitToMemory("nop", pc);
+		dsp.setPC(pc);
+		dsp.execInterpreter();
+		verify(dsp.getPC() == pc + 1);
+
+		const auto replacement = assembler.assemble("move #$22,x0");
+		verify(replacement.success() && replacement.wordCount == 1);
+
+		DspBoot boot(dsp);
+		verify(!boot.hdiWriteTX(replacement.wordCount));
+		verify(!boot.hdiWriteTX(pc));
+		verify(boot.hdiWriteTX(replacement.word[0]));
+		verify(dsp.memRead(MemArea_P, pc) == replacement.word[0]);
+
+		dsp.x0(0);
+		dsp.execInterpreter();
+		verify(dsp.x0() == 0x220000);
+		verify(dsp.getPC() == pc + 1);
+		dsp.resetHW();
 	}
 
 	void InterpreterUnitTests::testCycleAccounting()
