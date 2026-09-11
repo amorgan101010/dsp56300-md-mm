@@ -1,5 +1,7 @@
 #pragma once
 
+#include "dsp56kBase/pagedarray.h"
+
 #include <memory>
 #include <vector>
 
@@ -105,7 +107,7 @@ namespace dsp56k
 		Jit& m_jit;
 		const JitDspMode m_mode;
 
-		MmuArray<JitCacheEntry> m_jitCache;
+		PagedArray<JitCacheEntry> m_jitCache;
 		MmuArray<TJitFunc> m_jitFuncs;
 
 		std::unique_ptr<AsmJitLogger> m_logger;

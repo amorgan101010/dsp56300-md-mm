@@ -14,6 +14,7 @@ namespace dsp56k
 	//
 	void DSP::alu_and( bool ab, TWord _val )
 	{
+		updateDirtyCCR();
 		TReg56& d = ab ? reg.b : reg.a;
 
 		d.var &= (TInt64(_val)<<(24 + g_aluShift)) | static_cast<TInt64>(0xFF000000FFFFFF00ull);
@@ -31,6 +32,7 @@ namespace dsp56k
 	//
 	void DSP::alu_or( bool ab, TWord _val )
 	{
+		updateDirtyCCR();
 		TReg56& d = ab ? reg.b : reg.a;
 
 		d.var |= (TInt64(_val)<<(24 + g_aluShift));
@@ -47,6 +49,7 @@ namespace dsp56k
 	//
 	void DSP::alu_eor( bool ab, TWord _val )
 	{
+		updateDirtyCCR();
 		TReg56& d = ab ? reg.b : reg.a;
 
 		d.var ^= (TInt64(_val)<<(24 + g_aluShift));
@@ -191,9 +194,9 @@ namespace dsp56k
 
 		const TInt64 d64 = aluSignextend(dSrc);
 
-		sr_toggle( CCR_C, _shiftAmount && ((d64 & (TInt64(1)<<(56 + g_aluShift - _shiftAmount))) != 0) );
+		sr_toggle( CCR_C, _shiftAmount && ((uint64_t(d64) & (uint64_t{1} << (56 + g_aluShift - _shiftAmount))) != 0) );
 
-		const TInt64 res = d64 << _shiftAmount;
+		const TInt64 res = static_cast<TInt64>(uint64_t(d64) << _shiftAmount);
 
 		TReg56& d = abDst ? reg.b : reg.a;
 
@@ -222,6 +225,9 @@ namespace dsp56k
 	//
 	void DSP::alu_lsl( bool ab, int _shiftAmount )
 	{
+		// E/U survive this instruction, while N is replaced by bit 47.
+		// Resolve prior arithmetic flags before writing the logical-shift flags.
+		updateDirtyCCR();
 		TReg24 d = ab ? b1() : a1();
 
 		sr_toggle( CCR_C, _shiftAmount && bittest( d, 23-_shiftAmount+1) );
@@ -247,6 +253,7 @@ namespace dsp56k
 	//
 	void DSP::alu_lsr( bool ab, int _shiftAmount )
 	{
+		updateDirtyCCR();
 		TReg24 d = ab ? b1() : a1();
 
 		sr_toggle( CCR_C, _shiftAmount && bittest( d, _shiftAmount-1) );
@@ -334,6 +341,7 @@ namespace dsp56k
 
 	void DSP::alu_clr(bool ab)
 	{
+		updateDirtyCCR();
 		TReg56& dst = ab ? reg.b : reg.a;
 		dst.var = 0;
 
@@ -792,19 +800,17 @@ namespace dsp56k
 	}
 	inline void DSP::op_Dec(const TWord op)
 	{
-		auto ab = getFieldValue<Dec,Field_d>(op);
+		const auto ab = getFieldValue<Dec, Field_d>(op);
 		TReg56& d = ab ? reg.b : reg.a;
-
-		const auto old = d;
-		const auto res = (d.var -= (TInt64(1) << g_aluShift));
-
+		const uint64_t old = d.var;
+		const uint64_t step = uint64_t(1) << g_aluShift;
+		const uint64_t result = old - step;
+		d.var = static_cast<int64_t>(result);
 		aluMask(d);
-
 		sr_z_update(d);
-		sr_v_update(res,d);
+		sr_toggle(CCR_C, old < step);
+		sr_toggle(CCR_V, old == (uint64_t(0x80000000000000) << g_aluShift));
 		sr_l_update_by_v();
-		sr_c_update_arithmetic(old,d);
-		sr_toggle( CCR_C, bittest(d, 47 + g_aluShift) != bittest(old, 47 + g_aluShift) );
 		setCCRDirty(ab, d, CCR_E | CCR_U | CCR_N);
 	}
 
@@ -821,15 +827,17 @@ namespace dsp56k
 		
 		const auto c = msbOld != bitvalue<23>(s24);
 		
-		d.var <<= 1;
-		d.var |= static_cast<TInt64>(sr_test_noCache(CCR_C) ? 1 : 0) << g_aluShift;	// carry enters at the accumulator LSB
+		// DIV wraps at the accumulator width. Unsigned host arithmetic defines
+		// the shift and add/subtract even for negative intermediate remainders.
+		const uint64_t shifted = (uint64_t(d.var) << 1)
+			| (uint64_t(sr_test_noCache(CCR_C) ? 1 : 0) << g_aluShift);
+		d.var = static_cast<TInt64>(shifted);
 
 		const auto msbNew = bitvalue<55 + g_aluShift>(d);
 
-		if( c )
-			d.var = ((d.var + (signextend<TInt64,24>(s24.var) << (24 + g_aluShift)) )&static_cast<TInt64>(0x00ffffffff000000ull << g_aluShift)) | (d.var & (0xffffffll << g_aluShift));
-		else
-			d.var = ((d.var - (signextend<TInt64,24>(s24.var) << (24 + g_aluShift)) )&static_cast<TInt64>(0x00ffffffff000000ull << g_aluShift)) | (d.var & (0xffffffll << g_aluShift));
+		const int64_t divisor = (s24.var & 0xffffff) - ((s24.var & 0x800000) ? 0x1000000 : 0);
+		const uint64_t alignedDivisor = uint64_t(divisor) << (24 + g_aluShift);
+		d.var = static_cast<TInt64>(c ? shifted + alignedDivisor : shifted - alignedDivisor);
 
 		sr_toggle( CCRB_C, !bitvalue<55 + g_aluShift>(d) );	// Set if bit 55 of the result is cleared.
 		sr_toggle( CCRB_V, msbNew != msbOld );	// Set if the MSB of the destination operand is changed as a result of the instructions left shift operation.
@@ -918,20 +926,17 @@ namespace dsp56k
 	}
 	inline void DSP::op_Inc(const TWord op)
 	{
-		const auto ab = getFieldValue<Inc,Field_d>(op);
+		const auto ab = getFieldValue<Inc, Field_d>(op);
 		TReg56& d = ab ? reg.b : reg.a;
-
-		const auto old = d;
-
-		const auto res = (d.var += (TInt64(1) << g_aluShift));
-
+		const uint64_t old = d.var;
+		const uint64_t step = uint64_t(1) << g_aluShift;
+		const uint64_t result = old + step;
+		d.var = static_cast<int64_t>(result);
 		aluMask(d);
-
 		sr_z_update(d);
-		sr_v_update(res,d);
+		sr_toggle(CCR_C, old > result);
+		sr_toggle(CCR_V, old == ((uint64_t(0x7fffffffffffff) << g_aluShift)));
 		sr_l_update_by_v();
-		sr_c_update_arithmetic(old,d);	// TODO: what? C updated two times?!
-		sr_toggle( CCR_C, bittest(d, 47 + g_aluShift) != bittest(old, 47 + g_aluShift) );
 		setCCRDirty(ab, d, CCR_E | CCR_U | CCR_N);
 	}
 
@@ -1256,26 +1261,17 @@ namespace dsp56k
 	}
 	inline void DSP::op_Ror(const TWord op)
 	{
-		const auto D = getFieldValue<Ror, Field_d>(op);
-
-		auto& d = D ? reg.b.var : reg.a.var;
-
-		const auto c = bitvalue<uint64_t,24 + g_aluShift>(d);	// bit 24 = LSB of a1/b1
-		auto shifted = d;
-		reinterpret_cast<uint64_t&>(shifted) >>= (24 + g_aluShift);	// isolate a1/b1
-		const auto oldBit0 = shifted & 1;
-		shifted >>= 1;									// shift right
-		shifted |= static_cast<TInt64>(sr_val(CCRB_C)) << 23;	// inject old carry into bit 23 (MSB position)
-		shifted &= 0xffffff;
-		shifted <<= (24 + g_aluShift);					// move back
-
-		d &= static_cast<TInt64>(0xff000000ffffff00ull);
-		d |= shifted;
-
-		sr_toggle(CCRB_N, bitvalue<uint64_t, 47 + g_aluShift>(shifted));
-		sr_toggle(CCR_Z, shifted == 0);
+		const auto ab = getFieldValue<Ror, Field_d>(op);
+		const uint32_t field = ab ? b1().var : a1().var;
+		const uint32_t result = (field >> 1) | (static_cast<uint32_t>(sr_val(CCRB_C)) << 23);
+		if(ab)
+			b1(TReg24(result));
+		else
+			a1(TReg24(result));
+		sr_toggle(CCR_N, (result & 0x800000) != 0);
+		sr_toggle(CCR_Z, result == 0);
 		sr_clear(CCR_V);
-		sr_toggle(CCRB_C, static_cast<Bit>(oldBit0));
+		sr_toggle(CCR_C, (field & 1) != 0);
 	}
 	inline void DSP::op_Sbc(const TWord op)
 	{

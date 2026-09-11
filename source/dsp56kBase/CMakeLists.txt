@@ -7,10 +7,12 @@ set(SOURCES
 bitfield.h
 buildconfig.h
 conditionvariable.cpp conditionvariable.h
+cowmemory.cpp cowmemory.h
 dspassert.cpp dspassert.h
 fastmath.h
 logging.cpp logging.h
 mmuarray.h
+pagedarray.h
 mmuhelper.cpp mmuhelper.h
 mutex.cpp mutex.h
 ringbuffer.h
@@ -40,6 +42,15 @@ if(UNIX AND NOT APPLE)
 endif()
 
 target_include_directories(dsp56kBase PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
+add_executable(pagedArrayTest pagedarray_test.cpp)
+target_link_libraries(pagedArrayTest PRIVATE dsp56kBase)
+add_test(NAME pagedArrayTest COMMAND pagedArrayTest)
+
+add_executable(cowMemoryTest cowmemory_test.cpp)
+target_link_libraries(cowMemoryTest PRIVATE dsp56kBase)
+add_test(NAME cowMemoryTest COMMAND cowMemoryTest)
+set_tests_properties(cowMemoryTest PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
 
 add_executable(sharedAudioBufferTest sharedaudiobuffer_test.cpp)
 target_link_libraries(sharedAudioBufferTest PRIVATE dsp56kBase)

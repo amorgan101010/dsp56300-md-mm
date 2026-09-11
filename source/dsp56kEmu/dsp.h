@@ -33,8 +33,6 @@ namespace dsp56k
 	
 	using TInstructionFunc = void (DSP::*)(TWord _op);
 
-	void dspMmCleanGndSinStep(DSP* _dsp) noexcept;
-
 	template<typename Ta, typename Tb> void dspExecPeripherals(DSP* _dsp) noexcept;
 
 	static constexpr bool g_useJIT = g_jitSupported;
@@ -51,7 +49,6 @@ namespace dsp56k
 		friend class Jit;
 		friend class AotRuntime;
 		friend class DebuggerInterface;
-		friend void dspMmCleanGndSinStep(DSP* _dsp) noexcept;
 
 		// _____________________________________________________________________________
 		// types
@@ -169,14 +166,6 @@ namespace dsp56k
 		std::array<SRegState,Reg_COUNT>	m_prevRegStates;
 
 		TraceMode m_trace = Disabled;
-		bool m_mmCleanGndSin = false;
-		struct MmCleanGndSinState
-		{
-			std::array<TWord, 16> lane0{};
-			std::array<TWord, 16> lane1{};
-			bool pending = false;
-		};
-		MmCleanGndSinState m_mmCleanGndSinState;
 
 		std::string		m_asm;
 		Disassembler	m_disasm;
@@ -200,18 +189,12 @@ namespace dsp56k
 
 		TReg24	getPC							() const									{ return reg.pc; }
 
-		// Optional per-core frame correction. Disabled by default.
-		void setMmCleanGndSin(const bool _enabled) noexcept { m_mmCleanGndSin = _enabled; }
-		bool mmCleanGndSin() const noexcept { return m_mmCleanGndSin; }
-
 		ASMJIT_FORCE_INLINE void exec() noexcept
 		{
 			if(g_useJIT)
 				execJit();
 			else
 			{
-				if(ASMJIT_UNLIKELY(m_mmCleanGndSin))
-					dspMmCleanGndSinStep(this);
 				execInterpreter();
 			}
 		}
@@ -228,17 +211,6 @@ namespace dsp56k
 
 			if constexpr(g_useJIT)
 			{
-				// The optional correction is evaluated before every block by execJit().
-				// Keep that specialized core on the reference path until the generated
-				// bounded loop has an equivalent pre-block hook.
-				if(ASMJIT_UNLIKELY(m_mmCleanGndSin))
-				{
-					do
-						execJit();
-					while(m_cycles < _targetCycles);
-					return;
-				}
-
 				while(m_cycles < _targetCycles)
 				{
 					const TWord invalidPC = m_jit.getTrampoline().execUntilCycles(this, _targetCycles);
@@ -264,8 +236,6 @@ namespace dsp56k
 				execJitImpl<true>();
 			else
 			{
-				if(ASMJIT_UNLIKELY(m_mmCleanGndSin))
-					dspMmCleanGndSinStep(this);
 				execInterpreter();
 			}
 		}
@@ -278,9 +248,6 @@ namespace dsp56k
 		template<bool InlinePeripheralCheck>
 		ASMJIT_FORCE_INLINE void execJitImpl() noexcept
 		{
-			if(ASMJIT_UNLIKELY(m_mmCleanGndSin))
-				dspMmCleanGndSinStep(this);
-
 			// Optional dispatcher specialization: the ordinary peripheral callback
 			// immediately returns when its exact instruction/cycle deadline is not
 			// due. Preserve the checkpoint but perform that same test inline so the
@@ -647,7 +614,10 @@ namespace dsp56k
 			1	0	Scale Up	Bits 55,54..............47,46
 			*/
 
-			const uint32_t mask = (0x3fe << sr_val_noCache(SRB_S0) >> sr_val_noCache(SRB_S1)) & 0x3ff;
+			// Keep bit 55 in the signed integer portion in every mode. Shifting
+			// 0x3fe right for scale-up incorrectly drops that sign bit.
+			const auto lowBit = 1 + sr_val_noCache(SRB_S0) - sr_val_noCache(SRB_S1);
+			const uint32_t mask = 0x3ff & ~((1u << lowBit) - 1u);
 
 			const uint32_t d2 = static_cast<uint32_t>(_ab.var >> (46 + g_aluShift));
 
@@ -841,7 +811,7 @@ namespace dsp56k
 			// left-aligned the value is already sign-correct in 64 bits, no sign extension needed
 			const int64_t test = _src.var;
 
-			if( test < (-140737488355328ll << g_aluShift) )	// ff 800000 000000
+			if( test < -(140737488355328ll << g_aluShift) )	// ff 800000 000000
 			{
 				sr_set( CCR_L );
 				_dst = 0x800000;
