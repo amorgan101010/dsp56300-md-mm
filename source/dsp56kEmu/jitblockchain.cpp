@@ -21,18 +21,15 @@ namespace dsp56k
 		m_logger.reset(new AsmJitLogger());
 		m_errorHandler.reset(new AsmJitErrorHandler());
 
-		// Initialize MmuArrays with the full P memory size for lazy allocation
+		// Dispatch remains flat for generated code; metadata uses sparse pages.
 		const auto& mem = _jit.dsp().memory();
 		const auto pSize = mem.sizeP();
 
-		m_jitFuncs.init(pSize, &funcCreate);
+		if (!m_jitFuncs.initFromTemplate(_jit.getDispatchTemplate()))
+			m_jitFuncs.init(pSize, &funcCreate);
 		m_jitFuncs.setResizedCallback([this]() { onFuncsResized(); });
 
-		m_jitCache.init(pSize, [](JitCacheEntry* _ptr, size_t _count)
-		{
-			for (size_t i = 0; i < _count; ++i)
-				new (&_ptr[i]) JitCacheEntry();
-		});
+		m_jitCache.init(pSize);
 
 		if(_usedFuncSize)
 			ensureFuncSize(_usedFuncSize);
@@ -40,10 +37,8 @@ namespace dsp56k
 
 	JitBlockChain::~JitBlockChain()
 	{
-		for (size_t i = 0; i < m_jitCache.size(); ++i)
+		m_jitCache.forEachAllocated([this](JitCacheEntry& e)
 		{
-			auto& e = m_jitCache[i];
-
 			if(e.block)
 				destroy(e.block);
 
@@ -58,7 +53,7 @@ namespace dsp56k
 				delete e.singleOpCache;
 				e.singleOpCache = nullptr;
 			}
-		}
+		});
 
 		m_jitCache.clear();
 	}
@@ -83,10 +78,11 @@ namespace dsp56k
 
 		for (auto i = first; i < last; ++i)
 		{
-			assert(m_jitCache[i].block == nullptr || m_jitCache[i].block == _block);
-			m_jitCache[i].block = _block;
+			auto& entry = m_jitCache.edit(i);
+			assert(entry.block == nullptr || entry.block == _block);
+			entry.block = _block;
 			if (i == first)
-				m_jitFuncs[i] = Jit::updateRunFunc(m_jitCache[i]);
+				m_jitFuncs[i] = Jit::updateRunFunc(entry);
 			else
 				m_jitFuncs[i] = &funcRecreate;
 		}
@@ -103,7 +99,7 @@ namespace dsp56k
 
 		for(auto i=first; i<last; ++i)
 		{
-			m_jitCache[i].block = nullptr;
+			m_jitCache.edit(i).block = nullptr;
 			m_jitFuncs[i] = &funcCreate;
 		}
 
@@ -115,9 +111,9 @@ namespace dsp56k
 	{
 //		LOG("Create @ " << HEX(_pc));// << std::endl << cacheEntry.block->getDisasm());
 
-		ensureCacheSize(_pc+1);
+		ensureCacheSize(_pc);
 
-		auto& cacheEntry = m_jitCache[_pc];
+		auto& cacheEntry = m_jitCache.edit(_pc);
 
 		if(cacheEntry.singleOpCache)
 		{
@@ -215,7 +211,7 @@ namespace dsp56k
 		{
 			// if a single-word-op, cache it
 			const auto first = _block->getPCFirst();
-			auto& cacheEntry = m_jitCache[first];
+			auto& cacheEntry = m_jitCache.edit(first);
 			const auto op = _block->getSingleOpCacheKey();
 
 			if(cacheEntry.addSingleOp(op, _block))

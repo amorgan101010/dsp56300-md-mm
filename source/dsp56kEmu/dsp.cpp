@@ -46,70 +46,6 @@ namespace dsp56k
 
 	Jumptable g_jumptable;
 
-	// Optional, host-selected correction for nominal-rate frame conversion.
-	// The state qualification keeps the generic DSP path unchanged when disabled.
-	void dspMmCleanGndSinStep(DSP* _dsp) noexcept
-	{
-		auto& state = _dsp->m_mmCleanGndSinState;
-
-		const auto pc = _dsp->getPC().toWord();
-		const auto& r = _dsp->regs();
-		const auto word = [](const auto& _v)
-		{
-			return static_cast<TWord>(_v.var) & 0xffffff;
-		};
-		auto& mem = _dsp->memory();
-
-		if(pc == 0x973)
-		{
-			const auto voiceBase = word(r.r[6]);
-			const bool validVoiceBase = voiceBase >= 0x500 && voiceBase <= 0x700 &&
-				((voiceBase - 0x500) & 0xff) == 0;
-			const auto voiceIndex = validVoiceBase ? (voiceBase - 0x500) >> 8 : 0xffffff;
-			const auto sampleRateControl = validVoiceBase
-				? mem.get(MemArea_Y, voiceBase + 0x12) & 0xffffff : 0xffffff;
-			const auto machineProgram = validVoiceBase
-				? mem.get(MemArea_Y, 0x120 + voiceIndex) & 0xffffff : 0xffffff;
-			const auto pitch = validVoiceBase
-				? mem.get(MemArea_X, voiceBase + 0x01) & 0xffffff : 0;
-			// Match the nominal converter setting while excluding deliberate
-			// sample-rate reduction.
-			const int64_t nominalUnrounded = static_cast<int64_t>(pitch) * 96 - 0x7fe0;
-			const auto nominalRatio = nominalUnrounded > 0
-				? static_cast<TWord>(((nominalUnrounded + 0x2000) / 0x4000) * 0x4000)
-				: 0;
-			const auto ratioDelta = sampleRateControl > nominalRatio
-				? sampleRateControl - nominalRatio : nominalRatio - sampleRateControl;
-			state.pending = false;
-			// Apply only to the qualified nominal-rate second pass.
-			if(word(r.r[2]) != 0x00000f || word(r.r[3]) != 0x00000f ||
-				word(r.r[4]) != 0x000091 || machineProgram != 0x000001 ||
-				ratioDelta > 0x200)
-				return;
-
-			bool nonzero = false;
-			for(TWord i = 0; i < 16; ++i)
-			{
-				state.lane0[i] = mem.get(MemArea_X, 0x000001 + i) & 0xffffff;
-				state.lane1[i] = mem.get(MemArea_X, 0x000012 + i) & 0xffffff;
-				nonzero |= state.lane0[i] != 0 || state.lane1[i] != 0;
-			}
-			state.pending = nonzero;
-			return;
-		}
-
-		// Accept both dispatcher boundaries used by the supported execution modes.
-		if((pc != 0x3a9 && pc != 0x979) || !state.pending)
-			return;
-
-		for(TWord i = 0; i < 16; ++i)
-		{
-			mem.set(MemArea_X, i, state.lane0[i]);
-			mem.set(MemArea_X, 0x10 + i, state.lane1[i]);
-		}
-		state.pending = false;
-	}
-
 	void dspExecDefaultPreventInterrupt(DSP* _dsp) noexcept
 	{
 		_dsp->execDefaultPreventInterrupt();
@@ -199,8 +135,8 @@ namespace dsp56k
 
 		reg.sz.var = 0xbadbad; // The SZ register is not initialized during hardware reset, and must be set, using a MOVEC instruction, prior to enabling the stack extension.
 
-		const CCRMask srClear	= static_cast<CCRMask>(SR_RM | SR_SM | SR_CE | SR_SA | SR_FV | SR_LF | SR_DM | SR_SC | SR_S0 | SR_S1 | 0xf);
-		const CCRMask srSet		= static_cast<CCRMask>(SR_CP0 | SR_CP1 | SR_I0 | SR_I1);
+		const SRMask srClear		= static_cast<SRMask>(SR_RM | SR_SM | SR_CE | SR_SA | SR_FV | SR_LF | SR_DM | SR_SC | SR_S0 | SR_S1 | 0xf);
+		const SRMask srSet		= static_cast<SRMask>(SR_CP0 | SR_CP1 | SR_I0 | SR_I1);
 
 		sr_clear( srClear );
 		sr_set	( srSet );
@@ -222,7 +158,6 @@ namespace dsp56k
 		
 		m_instructions = 0;
 		m_cycles = 0;
-		m_mmCleanGndSinState = {};
 		m_jit.resetHW();
 	}
 
@@ -543,7 +478,6 @@ namespace dsp56k
 		perif[0]->reset();
 		if(perif[1] != perif[0])
 			perif[1]->reset();
-		m_mmCleanGndSinState = {};
 	}
 
 	void DSP::jsr(const TReg24& _val)
@@ -1293,20 +1227,16 @@ namespace dsp56k
 	// _____________________________________________________________________________
 	// alu_abs
 	//
-	void DSP::alu_abs( bool ab )
+	void DSP::alu_abs(bool ab)
 	{
 		TReg56& d = ab ? reg.b : reg.a;
-
-		TInt64 d64 = aluSignextend(d);
-
-		d64 = d64 < 0 ? -d64 : d64;
-
-		d.var = d64;
+		const int64_t old = aluSignextend(d);
+		// Unsigned arithmetic also defines the wraparound of the most negative value.
+		d.var = static_cast<int64_t>(old < 0 ? uint64_t(0) - static_cast<uint64_t>(old) : static_cast<uint64_t>(old));
 		aluMask(d);
-
 		sr_z_update(d);
-	//	sr_v_update(d);
-	//	sr_l_update_by_v();
+		sr_toggle(CCR_V, static_cast<uint64_t>(old) == (uint64_t(0x80000000000000) << g_aluShift));
+		sr_l_update_by_v();
 		setCCRDirty(ab, d, CCR_S | CCR_E | CCR_U | CCR_N);
 	}
 
@@ -1329,20 +1259,23 @@ namespace dsp56k
 	{
 		TReg56& d = ab ? reg.b : reg.a;
 
-		auto d64 = aluSignextend(d);
-		d64 = -d64;
-		
-		d.var = d64;
+		const auto value = static_cast<uint64_t>(d.var);
+		const bool overflow = value == (uint64_t(1) << (55 + g_aluShift));
+		// Unsigned subtraction also defines negation of the left-aligned
+		// minimum accumulator, whose signed 64-bit negation would overflow.
+		d.var = static_cast<TReg56::MyType>(uint64_t(0) - value);
 		aluMask(d);
 
 		sr_z_update(d);
-	//	TODO: how to update v? test in sim		sr_v_update(d);
+		sr_toggle(CCR_V, overflow);
 		sr_l_update_by_v();
 		setCCRDirty(ab, d, CCR_S | CCR_E | CCR_U | CCR_N);
 	}
 
 	void DSP::alu_not(const bool ab)
 	{
+		// Preserve E/U from preceding arithmetic before replacing logical N/Z/V.
+		updateDirtyCCR();
 		auto& d = ab ? reg.b.var : reg.a.var;
 
 		const auto masked = ~d & static_cast<TInt64>(0x00ffffff000000ull << g_aluShift);

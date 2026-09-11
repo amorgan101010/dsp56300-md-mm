@@ -200,6 +200,19 @@ namespace dsp56k
 
 		bool hostCommandArbitration() const { return m_hostCommandArbitration; }
 
+		// HC clears on acceptance, not on interrupt return. A command queued
+		// behind an active handler has not been accepted yet either.
+		bool hostCommandPending() const
+		{
+			return m_hostCommandArbitration &&
+				(m_hostCommandPending.load(std::memory_order_acquire) ||
+				 m_hostCommandHasQueued.load(std::memory_order_acquire));
+		}
+		uint64_t hostCommandAcceptedCycle() const
+		{
+			return m_hostCommandAcceptedCycle.load(std::memory_order_acquire);
+		}
+
 		// A command remains busy through interrupt return.
 		bool hostCommandBusy() const
 		{
@@ -259,5 +272,6 @@ namespace dsp56k
 		std::atomic<bool>	m_hostCommandInFlight{false};	// command vector dispatched; handler not yet returned
 		std::atomic<bool>	m_hostCommandHasQueued{false};	// a second command is waiting behind the in-flight one
 		std::atomic<TWord>	m_hostCommandQueuedVba{0};
+		std::atomic<uint64_t> m_hostCommandAcceptedCycle{0};
 	};
 }
