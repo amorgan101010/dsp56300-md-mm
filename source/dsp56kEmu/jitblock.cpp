@@ -353,12 +353,14 @@ namespace dsp56k
 		_rt.m_encodedCycles = info.cycleCount;
 
 		TWord pMemSize = 0;
+		bool onlyNops = true;
 
 		while(pMemSize < info.memSize)
 		{
 			opPC = _pc + pMemSize;
 
 			m_dsp.memory().getOpcode(opPC, opA, opB);
+			onlyNops &= opA == 0; // the single-word DSP NOP encoding
 
 #if defined(_DEBUG)
 			m_dsp.disassembler().disassemble(opDisasm, opA, opB, 0, 0, 0);
@@ -439,6 +441,11 @@ namespace dsp56k
 		const auto isLoopStart = info.hasFlag(JitBlockInfo::Flags::IsLoopBodyBegin);
 		const auto isLoopEnd = info.terminationReason == JitBlockInfo::TerminationReason::LoopEnd;
 		const auto isLoopBody = isLoopStart && isLoopEnd;
+		const bool combineNopIterations = m_config.combineNopLoopIterations
+			&& isLoopBody && !isFastInterrupt && !m_config.splitOpsByNops && onlyNops
+			&& _rt.getEncodedInstructionCount() >= 1 && _rt.getEncodedInstructionCount() <= 2
+			&& _rt.getEncodedCycleCount() == _rt.getEncodedInstructionCount()
+			&& m_config.maxDoIterations > 1 && asmjit::Support::isPowerOf2(m_config.maxDoIterations);
 
 		bool childIsConditional = false;
 
@@ -584,6 +591,7 @@ namespace dsp56k
 
 			// It is important that this code does not allocate any temp registers inside the branches. thefore, we prewarm everything
 			RegGP temp(*this);
+			RegGP extraNops(*this, combineNopIterations);
 
 			// LA is only changed by do_end, not by continuing the current loop. If the
 			// body has no pending LA write, reserve its register without reading memory
@@ -610,6 +618,24 @@ namespace dsp56k
 
 			m_asm.cmp(lc, asmjit::Imm(1));
 			m_asm.jle(enddo);
+			if(combineNopIterations)
+			{
+				// The existing backedge already executes through the next LC multiple
+				// of maxDoIterations, with no peripheral/C++ call between these NOPs.
+				// Account for those extra iterations and leave the existing enddo/PC/
+				// stack path intact. Its resulting LC forces the same return boundary.
+				const auto extra = r32(extraNops);
+				m_asm.mov(extra, lc);
+				m_asm.dec(extra);
+				m_asm.and_(extra, asmjit::Imm(m_config.maxDoIterations - 1));
+				m_asm.sub(lc, extra);
+				if(_rt.getEncodedInstructionCount() == 2)
+					m_asm.shl(extra, asmjit::Imm(1));
+				increaseInstructionCount(r64(extraNops));
+				increaseCycleCount(r64(extraNops));
+				m_asm.cmp(lc, asmjit::Imm(1));
+				m_asm.jle(enddo);
+			}
 			m_asm.dec(lc);
 
 			if(isLoopBody)

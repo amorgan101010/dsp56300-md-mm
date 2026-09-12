@@ -66,6 +66,7 @@ namespace dsp56k
 		parallelMoveXY();
 		boundedDispatch();
 		loopStateWriteback();
+		nopLoopSlices();
 		memoryBaseEntries();
 	}
 
@@ -387,6 +388,146 @@ namespace dsp56k
 		dsp.getJit().destroyAllBlocks();
 		dsp.getJit().setConfig(oldConfig);
 		std::cout << "Loop write-back tests: 528 cases, four slice limits, exact interpreter state passed." << std::endl;
+	}
+
+	void JitUnittests::nopLoopSlices()
+	{
+		const auto oldConfig = dsp.getJit().getConfig();
+		auto config = oldConfig;
+		config.enableOptimizer = false;
+		config.linkJitBlocks = false;
+		config.maxInstructionsPerBlock = 0;
+		config.getBlockConfig = {};
+		unsigned cases = 0;
+		auto snapshot = [&]()
+		{
+			dsp.getSR();
+			const auto& r = dsp.regs();
+			std::vector<int64_t> values{r.x.var, r.y.var, r.a.var, r.b.var,
+				r.pc.var, r.sr.var, r.omr.var, r.la.var, r.lc.var, r.sp.var, r.sc.var};
+			for(unsigned i = 0; i < 8; ++i)
+				for(const auto value : std::array<int64_t, 5>{r.r[i].var, r.n[i].var, r.m[i].var, r.mMask[i], r.mModulo[i]})
+					values.push_back(value);
+			for(const auto& value : r.ss) values.push_back(value.var);
+			values.push_back(dsp.getInstructionCounter());
+			values.push_back(dsp.getCycles());
+			values.push_back(peripheralsX.getTargetClock());
+			values.push_back(peripheralsY.getTargetClock());
+			return values;
+		};
+		auto setup = [&](unsigned bodyWords, TWord count, TWord stack, bool nested)
+		{
+			dsp.resetHW();
+			// resetHW does not reset the scheduling deadlines in IPeripherals.
+			// Start both arms with identical, active near-term deadlines.
+			peripheralsX.resetDelayCycles(0, 7);
+			peripheralsY.resetDelayCycles(0, 11);
+			peripheralsX.clearCycleDeadline();
+			peripheralsY.clearCycleDeadline();
+			peripheralsX.setCycleDeadline(5);
+			peripheralsY.setCycleDeadline(9);
+			dsp.setSR(0x30014 | (stack ? SR_LF : 0));
+			dsp.regs().la.var = 0x654321;
+			dsp.regs().lc.var = 0x123456;
+			dsp.regs().sp.var = dsp.regs().sc.var = stack;
+			for(unsigned i = 0; i < 16; ++i) dsp.regs().ss[i].var = 0x123456654321ull + i;
+			dsp.x0(count);
+			const TWord body = nested ? 0x404 : 0x402;
+			const TWord after = body + bodyWords;
+			std::stringstream inner, outer;
+			inner << "do x0,>$" << std::hex << after;
+			outer << "do #$4,>$" << std::hex << after + 1;
+			TWord pc = 0x400;
+			if(nested) pc = emitToMemory(outer.str().c_str(), pc);
+			pc = emitToMemory(inner.str().c_str(), pc);
+			verify(pc == body);
+			for(unsigned i = 0; i < bodyWords; ++i) pc = emitToMemory("nop", pc);
+			if(nested) pc = emitToMemory("nop", pc);
+			dsp.setPC(0x400);
+			return pc;
+		};
+
+		for(const unsigned bodyWords : {1u, 2u})
+		for(const unsigned limit : {2u, 4u, 8u, 16u})
+		for(const TWord count : {0u, 1u, 2u, 3u, 4u, 5u, 7u, 8u, 9u, 17u, 255u, 256u, 257u})
+		for(const TWord stack : {0u, 14u})
+		for(const bool nested : {false, true})
+		{
+			std::vector<std::vector<int64_t>> reference;
+			for(const bool combined : {false, true})
+			{
+				dsp.getJit().destroyAllBlocks();
+				config.maxDoIterations = limit;
+				config.combineNopLoopIterations = combined;
+				dsp.getJit().setConfig(config);
+				const auto after = setup(bodyWords, count, stack, nested);
+				std::vector<std::vector<int64_t>> trace;
+				while(dsp.getPC().var != after && trace.size() < 10000)
+				{
+					dsp.execJit();
+					trace.push_back(snapshot());
+				}
+				verify(trace.size() < 10000);
+				if(count)
+				{
+					// Reuse a previously compiled ending body with LF clear.
+					dsp.setSR(0x30014);
+					dsp.setPC(nested ? 0x404 : 0x402);
+					dsp.execJit();
+					trace.push_back(snapshot());
+				}
+				if(!combined) reference = trace;
+				else
+				{
+					if(trace != reference)
+					{
+						std::cerr << "NOP slice mismatch: words=" << bodyWords << " limit=" << limit
+							<< " count=" << count << " stack=" << stack << " nested=" << nested
+							<< " returns=" << reference.size() << "/" << trace.size() << std::endl;
+						for(size_t step = 0; step < std::min(reference.size(), trace.size()); ++step)
+						{
+							if(reference[step] == trace[step]) continue;
+							for(size_t field = 0; field < reference[step].size(); ++field)
+								if(reference[step][field] != trace[step][field])
+									std::cerr << "  return " << step << " field " << field << ": "
+										<< reference[step][field] << " -> " << trace[step][field] << std::endl;
+							break;
+						}
+					}
+					verify(trace == reference);
+				}
+			}
+			++cases;
+		}
+
+		// Direct cached-body entries include LC=0/1 and large 24-bit counts;
+		// compare one return so the latter do not create million-step tests.
+		for(const unsigned bodyWords : {1u, 2u})
+		for(const unsigned limit : {2u, 4u, 8u, 16u})
+		for(const TWord count : {0u, 1u, 2u, 3u, 4u, 5u, 7u, 0x7fffffu, 0x800000u, 0xffffffu})
+		for(const TWord stack : {0u, 14u})
+		for(const bool loopFlag : {false, true})
+		{
+			std::vector<int64_t> reference;
+			for(const bool combined : {false, true})
+			{
+				dsp.getJit().destroyAllBlocks();
+				config.maxDoIterations = limit;
+				config.combineNopLoopIterations = combined;
+				dsp.getJit().setConfig(config);
+				setup(bodyWords, 3, stack, false);
+				dsp.execJit();
+				dsp.regs().lc.var = count;
+				dsp.setSR(0x30014 | (loopFlag ? SR_LF : 0));
+				dsp.execJit();
+				if(!combined) reference = snapshot();
+				else verify(snapshot() == reference);
+			}
+			++cases;
+		}
+		dsp.getJit().destroyAllBlocks();
+		dsp.getJit().setConfig(oldConfig);
+		std::cout << "NOP slice tests: " << cases << " paired cases with exact state/counters at every return passed." << std::endl;
 	}
 
 	void JitUnittests::boundedDispatch()

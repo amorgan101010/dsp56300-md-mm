@@ -25,6 +25,9 @@ namespace dsp56k
 
 		// maximum number of iterations of a do loop before the Jit block is exited (and later re-entered), giving a time slice for interrupts/peripherals
 		uint32_t maxDoIterations = 0;
+		// Combine bookkeeping only within the existing bounded slice of a complete
+		// one-/two-NOP body. Keep the switch for exact return-boundary comparisons.
+		bool combineNopLoopIterations = true;
 
 		// needs to be true if there is code that executes code in interrupt regions as regular jumps
 		bool dynamicFastInterrupts = false;
