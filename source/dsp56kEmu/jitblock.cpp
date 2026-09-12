@@ -315,7 +315,10 @@ namespace dsp56k
 				// the block pushes as its return address - a "jsset #n,x:pp,handler" style
 				// vector would then return INTO the following vector slot instead of into
 				// the interrupted code.
-				const auto pcReg = m_dspRegPool.get(PoolReg::DspPC, true, true);
+				// Only the dynamic interrupt case can bypass the assignment below.
+				// Normal blocks overwrite PC unconditionally, so loading its old value is dead.
+				const auto pcReg = m_dspRegPool.get(PoolReg::DspPC,
+					fastInterruptMode == JitOps::FastInterruptMode::Dynamic, true);
 
 				const SkipLabel skip(m_asm);
 
