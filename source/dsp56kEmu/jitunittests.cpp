@@ -202,8 +202,14 @@ namespace dsp56k
 		config.getBlockConfig = {};
 		dsp.getJit().setConfig(config);
 
+		// Exercise both independent internal X/Y and external X/Y/P aliases.
+		for(const TWord addressBase : {TWord(0), dsp.memory().getBridgedMemoryAddress()})
 		for(const unsigned blockCount : {8u, 24u, 64u})
 		{
+			// This fixture's bridged backing is larger than its guest P window.
+			// The fallback C++ translator intentionally rejects those external P
+			// addresses, so its entry-path checks use the internal ranges only.
+			if(addressBase && !dsp.memory().hasMmuSupport()) continue;
 			std::vector<uint64_t> reference;
 			uint64_t targetCycles = 0;
 			for(const unsigned entry : {0u, 1u, 2u})
@@ -213,17 +219,17 @@ namespace dsp56k
 				dsp.setSR(0x30000);
 				dsp.regs().la.var = 0x654321;
 				dsp.regs().lc.var = 0;
-				dsp.regs().r[0].var = 0x100;
-				dsp.regs().r[1].var = 0x200;
-				dsp.regs().r[2].var = 0x300;
-				dsp.regs().r[3].var = 0x400;
+				dsp.regs().r[0].var = addressBase + 0x100;
+				dsp.regs().r[1].var = addressBase + 0x200;
+				dsp.regs().r[2].var = addressBase + 0x300;
+				dsp.regs().r[3].var = addressBase + 0x400;
 				dsp.regs().x.var = dsp.regs().y.var = 0;
 				for(unsigned i = 0; i < 128; ++i)
 				{
-					dsp.memory().set(MemArea_X, 0x100 + i, 0x123400 + i);
-					dsp.memory().set(MemArea_Y, 0x200 + i, 0);
-					dsp.memory().set(MemArea_Y, 0x300 + i, 0x654300 + i);
-					dsp.memory().set(MemArea_X, 0x400 + i, 0);
+					dsp.memory().set(MemArea_X, addressBase + 0x100 + i, 0x123400 + i);
+					dsp.memory().set(MemArea_Y, addressBase + 0x200 + i, 0);
+					dsp.memory().set(MemArea_Y, addressBase + 0x300 + i, 0x654300 + i);
+					dsp.memory().set(MemArea_X, addressBase + 0x400 + i, 0);
 				}
 				TWord pc = 0x400;
 				pc = emitToMemory("move x:(r0)+,x0", pc);
@@ -243,10 +249,23 @@ namespace dsp56k
 				for(const auto value : {dsp.regs().x.var, dsp.regs().y.var}) result.push_back(value);
 				result.push_back(dsp.getPC().var);
 				for(unsigned i = 0; i < 4; ++i) result.push_back(dsp.regs().r[i].var);
+				const auto writtenY = dsp.regs().r[1].var - addressBase - 0x200;
+				const auto writtenX = dsp.regs().r[3].var - addressBase - 0x400;
 				for(unsigned i = 0; i < 128; ++i)
 				{
-					result.push_back(dsp.memory().get(MemArea_Y, 0x200 + i));
-					result.push_back(dsp.memory().get(MemArea_X, 0x400 + i));
+					const auto y = dsp.memory().get(MemArea_Y, addressBase + 0x200 + i);
+					const auto x = dsp.memory().get(MemArea_X, addressBase + 0x400 + i);
+					verify(y == (i < writtenY ? 0x123400 + i : 0));
+					verify(x == (i < writtenX ? 0x654300 + i : 0));
+					if(addressBase)
+					{
+						// Inspect the allocated P backing, not the smaller guest P
+						// API window in this unit-test Memory configuration.
+						verify(dsp.memory().getMemAreaPtr(MemArea_P)[addressBase + 0x200 + i] == y);
+						verify(dsp.memory().getMemAreaPtr(MemArea_P)[addressBase + 0x400 + i] == x);
+					}
+					result.push_back(y);
+					result.push_back(x);
 				}
 				if(entry == 0) { reference = result; targetCycles = dsp.getCycles(); }
 				else verify(result == reference);
@@ -254,7 +273,7 @@ namespace dsp56k
 		}
 		dsp.getJit().destroyAllBlocks();
 		dsp.getJit().setConfig(oldConfig);
-		std::cout << "Memory base tests: exact X/Y accesses across all three trampoline entries passed." << std::endl;
+		std::cout << "Memory base tests: exact internal X/Y and external X/Y/P aliases across all three trampoline entries passed." << std::endl;
 	}
 
 	void JitUnittests::loopStateWriteback()
@@ -324,7 +343,15 @@ namespace dsp56k
 				unsigned steps = 0;
 				while(dsp.getPC().var != after && ++steps < 100000)
 				{
+					const bool singleIteration = limit == 1 && body <= 1 && dsp.getPC().var == 0x202;
+					const auto beforeLC = dsp.regs().lc.var;
+					const auto beforeInstructions = dsp.getInstructionCounter();
 					dsp.execJit();
+					if(singleIteration)
+					{
+						verify(dsp.getInstructionCounter() - beforeInstructions == after - 0x202);
+						if(beforeLC > 1) verify(dsp.regs().lc.var == beforeLC - 1);
+					}
 					if(dsp.regs().sp.var == stack + 2 && dsp.getPC().var != after)
 					{
 						verify(dsp.regs().la.var == after - 1);

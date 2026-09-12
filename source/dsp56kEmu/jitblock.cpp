@@ -515,9 +515,11 @@ namespace dsp56k
 		increaseCycleCount(asmjit::Imm(_rt.getEncodedCycleCount()));
 		m_asm.setCursor(m_asm.lastNode());
 
-			auto jumpIfLoop = [&](const asmjit::Label& _ifTrue, const JitReg32& _regPC, const JitReg32& _regLC, const JitReg32& _temp)
+		auto jumpIfLoop = [&](const asmjit::Label& _ifTrue, const JitReg32& _regPC, const JitReg32& _regLC, const JitReg32& _temp)
 		{
-			if (!isLoopBody)
+			// A slice of one must always return. In particular, ARM64 cannot encode
+			// the otherwise generated TST #0; an omitted test would use stale flags.
+			if (!isLoopBody || m_config.maxDoIterations == 1)
 				return false;
 
 			const SkipLabel skip(m_asm);
@@ -717,7 +719,7 @@ namespace dsp56k
 		JitReg32 regLC;
 		RegGP tempLC(*this, false);
 
-		if(isLoopBody && m_config.maxDoIterations)
+		if(isLoopBody && m_config.maxDoIterations > 1)
 		{
 			regLC = r32(m_dspRegPool.get(PoolReg::DspLC, true, false));
 
