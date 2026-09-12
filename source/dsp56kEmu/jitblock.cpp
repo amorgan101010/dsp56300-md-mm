@@ -583,8 +583,16 @@ namespace dsp56k
 			// It is important that this code does not allocate any temp registers inside the branches. thefore, we prewarm everything
 			RegGP temp(*this);
 
+			// LA is only changed by do_end, not by continuing the current loop. If the
+			// body has no pending LA write, reserve its register without reading memory
+			// and write it back only on that exit. The same applies to SR when neither
+			// the body nor a deferred CCR update has a pending write. This leaves the
+			// iteration/peripheral boundaries untouched, including the LF-clear path.
+			const bool deferLA = !m_dspRegPool.isWritten(PoolReg::DspLA);
+			const bool deferSR = !m_dspRegPool.isWritten(PoolReg::DspSR) && !m_dspRegs.ccrDirtyFlags();
+
 			const auto& sr = r32(m_dspRegPool.get(PoolReg::DspSR, true, true));
-			                 r32(m_dspRegPool.get(PoolReg::DspLA, true, true));	// we don't use it here but do_end does
+			const auto la = r32(m_dspRegPool.get(PoolReg::DspLA, !deferLA, true));
 			const auto& lc = r32(m_dspRegPool.get(PoolReg::DspLC, true, true));
 
 			m_dspRegPool.lock(PoolReg::DspSR);
@@ -616,12 +624,24 @@ namespace dsp56k
 
 			m_asm.bind(enddo);
 			ops.do_end(temp);
+			if(deferLA)
+				m_dspRegPool.movDspReg(dsp().regs().la, la);
+			if(deferSR)
+				m_dspRegPool.movDspReg(dsp().regs().sr, sr);
 
 			m_asm.bind(skip);
+			if(deferLA)
+				m_dspRegPool.discardWritten(PoolReg::DspLA);
+			if(deferSR)
+				m_dspRegPool.discardWritten(PoolReg::DspSR);
 
 			m_dspRegPool.unlock(PoolReg::DspSR);
 			m_dspRegPool.unlock(PoolReg::DspLA);
 			m_dspRegPool.unlock(PoolReg::DspLC);
+			// On the continuing/LF-clear paths the write-only LA register has no
+			// defined value. Do not leave it available for subsequent pool reads.
+			if(deferLA)
+				m_dspRegPool.discard(PoolReg::DspLA);
 
 			profileEnd(pl);
 		}

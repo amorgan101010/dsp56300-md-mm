@@ -65,6 +65,7 @@ namespace dsp56k
 
 		parallelMoveXY();
 		boundedDispatch();
+		loopStateWriteback();
 	}
 
 	JitUnittests::~JitUnittests()
@@ -187,6 +188,111 @@ namespace dsp56k
 	{
 		for(size_t i=0; i<_count; ++i)
 			block->asm_().nop();
+	}
+
+	void JitUnittests::loopStateWriteback()
+	{
+		const auto oldConfig = dsp.getJit().getConfig();
+		auto config = oldConfig;
+		config.enableOptimizer = false; // exercise the emitter, not dead-code cleanup
+		config.linkJitBlocks = false;
+		config.maxInstructionsPerBlock = 0;
+		config.getBlockConfig = {};
+
+		auto snapshot = [&]()
+		{
+			dsp.getSR(); // materialize the interpreter's lazy CCR before comparison
+			const auto& r = dsp.regs();
+			std::vector<int64_t> values{r.x.var, r.y.var, r.a.var, r.b.var,
+				r.pc.var, r.sr.var, r.omr.var, r.la.var, r.lc.var, r.sp.var, r.sc.var};
+			for(unsigned i = 0; i < 8; ++i)
+				for(const auto value : std::array<int64_t, 5>{r.r[i].var, r.n[i].var, r.m[i].var, r.mMask[i], r.mModulo[i]})
+					values.push_back(value);
+			for(const auto& value : r.ss) values.push_back(value.var);
+			values.push_back(dsp.getInstructionCounter());
+			return values;
+		};
+
+		for(const unsigned body : {0u, 1u, 2u, 3u, 4u, 5u})
+		for(const TWord count : {0u, 1u, 2u, 3u, 4u, 5u, 7u, 8u, 9u, 17u, 257u})
+		for(const TWord stack : {0u, 14u})
+		{
+			const TWord after = body == 0 ? 0x203 : body == 1 ? 0x204 : 0x210;
+			const auto setup = [&]()
+			{
+				dsp.resetHW();
+				dsp.setSR(0x30014 | (stack ? SR_LF : 0));
+				dsp.regs().la.var = 0x654321;
+				dsp.regs().lc.var = 0x123456;
+				dsp.regs().sp.var = stack;
+				dsp.regs().sc.var = stack;
+				for(unsigned i = 0; i < 16; ++i) dsp.regs().ss[i].var = 0x123456654321ull + i;
+				dsp.setALU(false, TReg56(int64_t(0)));
+				dsp.setALU(true, TReg56(int64_t(0x1000000)));
+				dsp.x0(count);
+				dsp.y0(0);
+				dsp.x1(0);
+				dsp.y1(0);
+				std::stringstream doOp;
+				doOp << "do x0,>$" << std::hex << after;
+				TWord pc = emitToMemory(doOp.str().c_str(), 0x200);
+				verify(pc == 0x202);
+				if(body == 2) pc = emitToMemory("add b,a", pc);
+				if(body == 3) pc = emitToMemory("move #>$20f,la", pc);
+				if(body == 4) pc = emitToMemory("ori #$40,ccr", pc);
+				if(body == 5) pc = emitToMemory("do #$3,>$208", pc);
+				while(pc < after) pc = emitToMemory("nop", pc);
+				verify(pc == after);
+				dsp.setPC(0x200);
+			};
+
+			std::vector<int64_t> reference;
+			uint64_t referenceCycles = 0;
+			for(const unsigned limit : {0u, 1u, 4u, 8u})
+			{
+				config.maxDoIterations = limit;
+				dsp.getJit().destroyAllBlocks();
+				dsp.getJit().setConfig(config);
+				setup();
+				unsigned steps = 0;
+				while(dsp.getPC().var != after && ++steps < 100000)
+				{
+					dsp.execJit();
+					if(dsp.regs().sp.var == stack + 2 && dsp.getPC().var != after)
+					{
+						verify(dsp.regs().la.var == after - 1);
+						verify(dsp.regs().lc.var >= 1 && dsp.regs().lc.var <= count);
+						verify(dsp.getSR().var & SR_LF);
+					}
+				}
+				verify(steps < 100000);
+				verify(dsp.regs().la.var == 0x654321);
+				verify(dsp.regs().lc.var == 0x123456);
+				verify(dsp.regs().sp.var == stack && dsp.regs().sc.var == stack);
+				if(reference.empty()) { reference = snapshot(); referenceCycles = dsp.getCycles(); }
+				else { verify(snapshot() == reference); verify(dsp.getCycles() == referenceCycles); }
+
+				// A cached loop-ending block can also run outside an active DO loop.
+				if(body <= 1 && count)
+				{
+					dsp.setSR(0x30014);
+					dsp.setPC(0x202);
+					dsp.execJit();
+					verify(dsp.getPC().var == after);
+					verify(dsp.regs().la.var == 0x654321);
+					verify(dsp.regs().lc.var == 0x123456);
+					verify(dsp.getSR().var == 0x30014);
+					verify(dsp.regs().sp.var == stack && dsp.regs().sc.var == stack);
+				}
+			}
+			setup();
+			dsp.execInterpreter(); // the interpreter executes a whole DO internally
+			verify(dsp.getPC().var == after);
+			verify(snapshot() == reference);
+		}
+		dsp.getJit().destroyAllBlocks();
+		dsp.getJit().setConfig(oldConfig);
+		std::cout << "Loop write-back tests: 528 cases, four slice limits, exact interpreter state passed." << std::endl;
 	}
 
 	void JitUnittests::boundedDispatch()
