@@ -302,7 +302,15 @@ namespace dsp56k
 
 		for(const unsigned body : {0u, 1u, 2u, 3u, 4u, 5u})
 		for(const TWord count : {0u, 1u, 2u, 3u, 4u, 5u, 7u, 8u, 9u, 17u, 257u})
+#ifdef NDEBUG
 		for(const TWord stack : {0u, 14u})
+#else
+		// The interpreter deliberately asserts instead of wrapping its stack.
+		// Leave room for the nested body's four pushes in assertion-enabled runs.
+		// Release still checks interpreter wrap; nopLoopSlices checks JIT wrap
+		// against the unfused emitter in both configurations.
+		for(const TWord stack : {0u, 11u})
+#endif
 		{
 			const TWord after = body == 0 ? 0x203 : body == 1 ? 0x204 : 0x210;
 			const auto setup = [&]()
