@@ -66,6 +66,7 @@ namespace dsp56k
 		parallelMoveXY();
 		boundedDispatch();
 		loopStateWriteback();
+		memoryBaseEntries();
 	}
 
 	JitUnittests::~JitUnittests()
@@ -188,6 +189,72 @@ namespace dsp56k
 	{
 		for(size_t i=0; i<_count; ++i)
 			block->asm_().nop();
+	}
+
+	void JitUnittests::memoryBaseEntries()
+	{
+		const auto oldConfig = dsp.getJit().getConfig();
+		auto config = oldConfig;
+		config.enableOptimizer = false;
+		config.linkJitBlocks = false;
+		config.dynamicPeripheralAddressing = true;
+		config.maxInstructionsPerBlock = 2;
+		config.getBlockConfig = {};
+		dsp.getJit().setConfig(config);
+
+		for(const unsigned blockCount : {8u, 24u, 64u})
+		{
+			std::vector<uint64_t> reference;
+			uint64_t targetCycles = 0;
+			for(const unsigned entry : {0u, 1u, 2u})
+			{
+				dsp.getJit().destroyAllBlocks();
+				dsp.resetHW();
+				dsp.setSR(0x30000);
+				dsp.regs().la.var = 0x654321;
+				dsp.regs().lc.var = 0;
+				dsp.regs().r[0].var = 0x100;
+				dsp.regs().r[1].var = 0x200;
+				dsp.regs().r[2].var = 0x300;
+				dsp.regs().r[3].var = 0x400;
+				dsp.regs().x.var = dsp.regs().y.var = 0;
+				for(unsigned i = 0; i < 128; ++i)
+				{
+					dsp.memory().set(MemArea_X, 0x100 + i, 0x123400 + i);
+					dsp.memory().set(MemArea_Y, 0x200 + i, 0);
+					dsp.memory().set(MemArea_Y, 0x300 + i, 0x654300 + i);
+					dsp.memory().set(MemArea_X, 0x400 + i, 0);
+				}
+				TWord pc = 0x400;
+				pc = emitToMemory("move x:(r0)+,x0", pc);
+				pc = emitToMemory("move x0,y:(r1)+", pc);
+				// The peripheral read calls C++; invariant bases must survive that call.
+				pc = emitToMemory("movep x:<<$ffffc5,y1", pc);
+				pc = emitToMemory("move y:(r2)+,y0", pc);
+				pc = emitToMemory("move y0,x:(r3)+", pc);
+				emitToMemory("bra >$400", pc);
+				dsp.setPC(0x400);
+
+				if(entry == 0) for(unsigned i = 0; i < blockCount; ++i) dsp.execJit();
+				else if(entry == 1) dsp.getJit().getTrampoline().exec(&dsp, blockCount);
+				else dsp.execUntilCycles(targetCycles);
+
+				std::vector<uint64_t> result{dsp.getInstructionCounter(), dsp.getCycles()};
+				for(const auto value : {dsp.regs().x.var, dsp.regs().y.var}) result.push_back(value);
+				result.push_back(dsp.getPC().var);
+				for(unsigned i = 0; i < 4; ++i) result.push_back(dsp.regs().r[i].var);
+				for(unsigned i = 0; i < 128; ++i)
+				{
+					result.push_back(dsp.memory().get(MemArea_Y, 0x200 + i));
+					result.push_back(dsp.memory().get(MemArea_X, 0x400 + i));
+				}
+				if(entry == 0) { reference = result; targetCycles = dsp.getCycles(); }
+				else verify(result == reference);
+			}
+		}
+		dsp.getJit().destroyAllBlocks();
+		dsp.getJit().setConfig(oldConfig);
+		std::cout << "Memory base tests: exact X/Y accesses across all three trampoline entries passed." << std::endl;
 	}
 
 	void JitUnittests::loopStateWriteback()
