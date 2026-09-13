@@ -37,7 +37,7 @@ namespace dsp56k
 		{
 			// BFI already selects only bit zero. Sticky updates use OR instead,
 			// so they still need the extraction to discard all other source bits.
-			ccr_update(r32(_src), _dstBit);
+			ccr_update(r64(_src), _dstBit);
 			return;
 		}
 
