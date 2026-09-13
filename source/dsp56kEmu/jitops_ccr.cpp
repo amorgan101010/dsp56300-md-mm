@@ -76,7 +76,8 @@ namespace dsp56k
 
 	void JitOps::updateDirtyCCR(const JitReg64& _alu, CCRMask _dirtyBits)
 	{
-		CcrBatchUpdate u(*this, _dirtyBits);
+		// Every recognized lazy flag below is assigned, not ORed, on ARM64.
+		CcrBatchUpdate u(*this, _dirtyBits, true);
 
 		if(_dirtyBits & CCR_V)
 		{
@@ -126,9 +127,11 @@ namespace dsp56k
 		}, _true, _false, _hasFalseFunc, _updateDirtyCCR, _releaseRegPool);
 	}
 
-	JitOps::CcrBatchUpdate::CcrBatchUpdate(JitOps& _ops, const CCRMask _mask) : m_ops(_ops)
+	JitOps::CcrBatchUpdate::CcrBatchUpdate(JitOps& _ops, const CCRMask _mask) : CcrBatchUpdate(_ops, _mask, false) {}
+
+	JitOps::CcrBatchUpdate::CcrBatchUpdate(JitOps& _ops, const CCRMask _mask, const bool _allAssigned) : m_ops(_ops)
 	{
-		initialize(_mask);
+		initialize(_mask, _allAssigned);
 	}
 
 	JitOps::CcrBatchUpdate::CcrBatchUpdate(JitOps& _ops, CCRMask _maskA, CCRMask _maskB) : CcrBatchUpdate(_ops,  static_cast<CCRMask>(_maskA | _maskB)) {}
@@ -139,11 +142,19 @@ namespace dsp56k
 		m_ops.m_ccr_update_clear = true;
 	}
 
-	void JitOps::CcrBatchUpdate::initialize(CCRMask _mask) const
+	void JitOps::CcrBatchUpdate::initialize(CCRMask _mask, const bool _allAssigned) const
 	{
 #ifdef HAVE_ARM64
 		const auto keep = static_cast<uint32_t>(~_mask);
-		if(m_ops.getBlock().getConfig().optimizeCcrSequences &&
+		constexpr auto assignedFlags = CCR_N | CCR_V | CCR_Z | CCR_E | CCR_U;
+		if(m_ops.getBlock().getConfig().optimizeCcrSequences && _allAssigned &&
+			(_mask & ~assignedFlags) == 0)
+		{
+			// Each bit is replaced by BFI below. None of these updates observes
+			// another bit in this mask before its assignment; sticky L is updated
+			// from the newly assigned V. Keep all compile-time bookkeeping below.
+		}
+		else if(m_ops.getBlock().getConfig().optimizeCcrSequences &&
 			asmjit::a64::Utils::isLogicalImm(keep, 32))
 		{
 			// AND (not ANDS) must leave the host condition flags intact.
