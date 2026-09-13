@@ -281,6 +281,7 @@ namespace dsp56k
 	void JitUnittests::peripheralDmaReads()
 	{
 		unsigned comparisons = 0;
+		for(const bool incrementSource : {false, true})
 		for(const bool optimizer : {false, true})
 		for(const bool dynamic : {false, true})
 		for(const unsigned entry : {0u, 1u, 2u})
@@ -362,7 +363,8 @@ namespace dsp56k
 							dma.setDSR(0, source);
 							dma.setDDR(0, source + 0x100);
 							dma.setDCO(0, 3);
-							dma.setDCR(0, (5u << DmaChannel::Dam0) | (5u << DmaChannel::Dam3)
+							dma.setDCR(0, ((incrementSource ? 5u : 4u) << DmaChannel::Dam0)
+								| ((incrementSource ? 4u : 5u) << DmaChannel::Dam3)
 								| (1u << DmaChannel::Dtm0) | (1u << DmaChannel::De));
 						}
 					}
@@ -373,9 +375,10 @@ namespace dsp56k
 							auto& dma = px.getDMA();
 							verify(dma.trigger(DmaChannel::RequestSource::ExternalIRQA));
 							const TWord source = 0x800;
-							verify(dma.getDSR(0) == source + phase - 5);
-							verify(dma.getDDR(0) == source + 0x100 + phase - 5);
-							verify(memory.get(MemArea_X, source + 0x100 + phase - 6) == 0x765400 + phase - 6);
+							verify(dma.getDSR(0) == source + (incrementSource ? phase - 5 : 0));
+							verify(dma.getDDR(0) == source + 0x100 + (incrementSource ? 0 : phase - 5));
+							verify(memory.get(MemArea_X, source + 0x100 + (incrementSource ? 0 : phase - 6))
+								== 0x765400 + (incrementSource ? phase - 6 : 0));
 						}
 					}
 
