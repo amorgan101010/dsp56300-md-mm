@@ -22,6 +22,9 @@ namespace dsp56k
 		// Use live storage for immediate peripheral reads that explicitly support
 		// it. Disable for differential checks against the ordinary read handler.
 		bool inlinePeripheralReads = true;
+		// ARM64-only local CCR sequence reductions. Keep an unoptimized path for
+		// differential checks of flags, lazy updates and conditional execution.
+		bool optimizeCcrSequences = true;
 
 		// 16 bit compatibility mode for AGU operations are not supported by default, set to true if needed
 		bool support16BitSCMode = false;

@@ -2,6 +2,10 @@
 #include "jitops.h"
 #include "jitregtypes.h"
 
+#ifdef HAVE_ARM64
+#include "asmjit/arm/a64utils.h"
+#endif
+
 namespace dsp56k
 {
 	constexpr bool g_useSRCache = true;
@@ -138,9 +142,20 @@ namespace dsp56k
 	void JitOps::CcrBatchUpdate::initialize(CCRMask _mask) const
 	{
 #ifdef HAVE_ARM64
-		const RegScratch scratch(m_ops.getBlock());
-		m_ops.m_asm.mov(r32(scratch), asmjit::Imm(~_mask));
-		m_ops.m_asm.and_(r32(m_ops.m_dspRegs.getSR(JitDspRegs::ReadWrite)), r32(scratch));
+		const auto keep = static_cast<uint32_t>(~_mask);
+		if(m_ops.getBlock().getConfig().optimizeCcrSequences &&
+			asmjit::a64::Utils::isLogicalImm(keep, 32))
+		{
+			// AND (not ANDS) must leave the host condition flags intact.
+			m_ops.m_asm.and_(r32(m_ops.m_dspRegs.getSR(JitDspRegs::ReadWrite)), asmjit::Imm(keep));
+		}
+		else
+		{
+			// A discontiguous CCR mask is not necessarily an ARM logical immediate.
+			const RegScratch scratch(m_ops.getBlock());
+			m_ops.m_asm.mov(r32(scratch), asmjit::Imm(keep));
+			m_ops.m_asm.and_(r32(m_ops.m_dspRegs.getSR(JitDspRegs::ReadWrite)), r32(scratch));
+		}
 #else
 		m_ops.m_asm.and_(r32(m_ops.m_dspRegs.getSR(JitDspRegs::ReadWrite)), asmjit::Imm(~_mask));
 #endif

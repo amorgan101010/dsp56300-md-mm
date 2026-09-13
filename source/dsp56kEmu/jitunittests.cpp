@@ -69,6 +69,7 @@ namespace dsp56k
 		nopLoopSlices();
 		memoryBaseEntries();
 		peripheralDmaReads();
+		ccrSequences();
 	}
 
 	JitUnittests::~JitUnittests()
@@ -125,6 +126,7 @@ namespace dsp56k
 			JitConfig config;
 			config.dynamicPeripheralAddressing = true;
 			config.aguSupportBitreverse = true;
+			config.optimizeCcrSequences = m_optimizeCcrSequences;
 
 			JitBlock b(m_asm, dsp, rtData, std::move(config));
 			JitBlockRuntimeData rt;
@@ -153,6 +155,7 @@ namespace dsp56k
 		m_asm.ret();
 
 		m_asm.finalize();
+		m_lastCodeSize = code.codeSize();
 
 		TJitFunc func;
 		const auto err = m_rt.add(&func, &code);
@@ -185,6 +188,155 @@ namespace dsp56k
 		}
 
 		m_rt.release(&func);
+	}
+
+	void JitUnittests::ccrSequences()
+	{
+#ifdef HAVE_ARM64
+		const auto oldLogging = m_logging;
+		m_logging = false;
+		size_t checks = 0;
+		std::array<size_t, 2> cleanBranchBytes{};
+		constexpr std::array<ConditionCode, 4> conditions = {
+			CCCC_GreaterEqual, CCCC_LessThan, CCCC_Normalized, CCCC_NotNormalized};
+		constexpr std::array<asmjit::arm::CondCode, 4> hostFlags = {
+			asmjit::arm::CondCode::kZero, asmjit::arm::CondCode::kCS,
+			asmjit::arm::CondCode::kMI, asmjit::arm::CondCode::kVS};
+
+		for(const bool optimized : {false, true})
+		{
+			m_optimizeCcrSequences = optimized;
+			// Include every CCR mask, not just masks encodable as logical immediates.
+			// The scratch-register fallback and mask zero must remain valid too.
+			for(unsigned mask = 0; mask < 256; ++mask)
+				for(const TWord initial : {0u, 0xffffffu, 0x030055u, 0x0302aau})
+				{
+					dsp.setSR(initial);
+					runTest([&]()
+					{
+						const RegGP r(*block);
+						// Exercise zero, negative/carry and signed-overflow NZCV patterns.
+						const uint64_t value = initial == 0 ? 1 : initial == 0xffffff ? 0 :
+							initial == 0x030055 ? 0x8000000000000000ull : 0xffffffffffffffffull;
+						block->asm_().mov(r64(r), asmjit::Imm(value));
+						block->asm_().cmp(r64(r), asmjit::Imm(1));
+						for(size_t i = 0; i < hostFlags.size(); ++i)
+						{
+							block->asm_().cset(r64(r), hostFlags[i]);
+							block->mem().mov(m_checks[i], r64(r));
+						}
+						{ JitOps::CcrBatchUpdate batch(*ops, static_cast<CCRMask>(mask)); }
+						for(size_t i = 0; i < hostFlags.size(); ++i)
+						{
+							block->asm_().cset(r64(r), hostFlags[i]);
+							block->mem().mov(m_checks[i + 4], r64(r));
+						}
+					}, [&]()
+					{
+						verify(dsp.getSR().var == (initial & ~mask));
+						for(size_t i = 0; i < hostFlags.size(); ++i)
+							verify(m_checks[i] == m_checks[i + 4]);
+					});
+					++checks;
+				}
+
+			// BFI accepts an unmasked source for nonsticky destinations only.
+			// Cover every source bit and destination, with deliberately dirty upper bits.
+			for(unsigned sourceBit = 0; sourceBit < 64; ++sourceBit)
+				for(unsigned destinationBit = 0; destinationBit < 8; ++destinationBit)
+					for(const uint64_t source : {0ull, 0xffffffffffffffffull,
+						0xaaaaaaaaaaaaaaaaull, 0x5555555555555555ull})
+					{
+						const TWord initial = 0x030000 | (source & 0xff);
+						const TWord bit = ((source >> sourceBit) & 1) << destinationBit;
+						const bool sticky = destinationBit == CCRB_L || destinationBit == CCRB_S;
+						const TWord expected = sticky ? (initial | bit) :
+							((initial & ~(1u << destinationBit)) | bit);
+						dsp.setSR(initial);
+						runTest([&]()
+						{
+							const RegGP r(*block);
+							block->asm_().mov(r64(r), asmjit::Imm(source));
+							ops->copyBitToCCR(r, sourceBit, static_cast<CCRBit>(destinationBit));
+						}, [&]() { verify(dsp.getSR().var == expected); });
+						++checks;
+					}
+
+			for(unsigned scaling = 0; scaling < 4; ++scaling)
+				for(unsigned ccr = 0; ccr < 256; ++ccr)
+					for(const auto condition : conditions)
+					{
+						const TWord initial = 0x030000 | (scaling << SRB_S0) | ccr;
+						const bool nvEqual = bool(ccr & CCR_N) == bool(ccr & CCR_V);
+						const bool normalized = (ccr & (CCR_U | CCR_E | CCR_Z)) == 0;
+						const bool expected = condition == CCCC_GreaterEqual ? nvEqual :
+							condition == CCCC_LessThan ? !nvEqual :
+							condition == CCCC_Normalized ? normalized : !normalized;
+						dsp.setSR(initial);
+						runTest([&]()
+						{
+							const RegGP r(*block);
+							ops->decode_cccc(r, condition);
+							block->mem().mov(m_checks[0], r.get());
+						}, [&]()
+						{
+							cleanBranchBytes[optimized ? 1 : 0] += m_lastCodeSize;
+							verify(m_checks[0] == (expected ? 1u : 0u));
+							verify(dsp.getSR().var == initial);
+						});
+						++checks;
+					}
+		}
+
+		// Differentially exercise each subset of pending lazy flags. Preserve the
+		// old update order, including V's sticky-L update, across scaling modes.
+		constexpr std::array<CCRMask, 5> dirtyFlags = {CCR_N, CCR_V, CCR_U, CCR_E, CCR_Z};
+		for(unsigned scaling = 0; scaling < 4; ++scaling)
+			for(unsigned subset = 0; subset < 32; ++subset)
+				for(const uint64_t value : {0ull, 1ull, 0xffffffffffffffffull,
+					0x003fffffffffffull, 0x00400000000000ull, 0x007fffffffffffull,
+					0x00800000000000ull, 0x00ffffffffffffull, 0x0100000000000000ull,
+					0x7fffffffffffffull, 0x80000000000000ull, 0xff800000000000ull})
+					for(const auto condition : conditions)
+					{
+						CCRMask mask = CCR_None;
+						for(size_t i = 0; i < dirtyFlags.size(); ++i)
+							if(subset & (1u << i))
+								mask = static_cast<CCRMask>(mask | dirtyFlags[i]);
+						std::array<uint64_t, 2> reference{};
+						for(const bool optimized : {false, true})
+						{
+							m_optimizeCcrSequences = optimized;
+							dsp.setSR(0x030000 | (scaling << SRB_S0) | (subset & 1 ? 0xff : 0));
+							runTest([&]()
+							{
+								JitDspMode mode;
+								mode.initialize(dsp);
+								block->setMode(&mode);
+								const RegGP r(*block);
+								block->asm_().mov(r64(r), asmjit::Imm(aluTestValue(value)));
+								ops->ccr_dirty(0, r64(r), mask);
+								ops->decode_cccc(r, condition);
+								block->mem().mov(m_checks[0], r.get());
+								ops->updateDirtyCCR();
+								block->setMode(nullptr);
+							}, [&]()
+							{
+								const std::array<uint64_t, 2> actual = {m_checks[0], dsp.getSR().var};
+								if(optimized)
+									verify(actual == reference);
+								else
+									reference = actual;
+							});
+							++checks;
+						}
+					}
+		verify(cleanBranchBytes[1] < cleanBranchBytes[0]);
+		m_optimizeCcrSequences = true;
+		m_logging = oldLogging;
+		LOG("ARM64 CCR sequences: " << checks << " cases; clean condition fixture bytes "
+			<< cleanBranchBytes[0] << " -> " << cleanBranchBytes[1]);
+#endif
 	}
 
 	void JitUnittests::nop(size_t _count) const
