@@ -292,7 +292,8 @@ namespace dsp56k
 				// belong to that DSP, never another instance or a retired one.
 				DefaultMemoryValidator validator;
 				Memory memory(validator, 0x4000);
-				Peripherals56303 px, py;
+				Peripherals56303 px;
+				PeripheralsNop py; // the supported 56303 X / NOP Y product configuration
 				DSP cpu(memory, &px, &py);
 				auto config = cpu.getJit().getConfig();
 				config.enableOptimizer = optimizer;
@@ -349,16 +350,14 @@ namespace dsp56k
 							const TWord address = XIO_DCR5 + index;
 							const TWord mask = index % 4 == 0 ? 0x7fffff : 0xffffff; // leave DE disabled
 							px.write(address, values[phase] & mask);
-							py.write(address, (values[phase] ^ 0x123456) & mask);
 						}
 					}
 					else if(phase == 5)
 					{
-						for(unsigned side = 0; side < 2; ++side)
 						{
-							auto& dma = (side ? py : px).getDMA();
-							const TWord source = 0x800 + side * 0x200;
-							for(unsigned i = 0; i < 4; ++i) memory.set(MemArea_X, source + i, 0x765400 + side * 16 + i);
+							auto& dma = px.getDMA();
+							const TWord source = 0x800;
+							for(unsigned i = 0; i < 4; ++i) memory.set(MemArea_X, source + i, 0x765400 + i);
 							dma.setDCR(0, 0);
 							dma.setDSR(0, source);
 							dma.setDDR(0, source + 0x100);
@@ -370,14 +369,13 @@ namespace dsp56k
 					else
 					{
 						// Autonomous word requests modify already-compiled live reads.
-						for(unsigned side = 0; side < 2; ++side)
 						{
-							auto& dma = (side ? py : px).getDMA();
+							auto& dma = px.getDMA();
 							verify(dma.trigger(DmaChannel::RequestSource::ExternalIRQA));
-							const TWord source = 0x800 + side * 0x200;
+							const TWord source = 0x800;
 							verify(dma.getDSR(0) == source + phase - 5);
 							verify(dma.getDDR(0) == source + 0x100 + phase - 5);
-							verify(memory.get(MemArea_X, source + 0x100 + phase - 6) == 0x765400 + side * 16 + phase - 6);
+							verify(memory.get(MemArea_X, source + 0x100 + phase - 6) == 0x765400 + phase - 6);
 						}
 					}
 
@@ -386,10 +384,8 @@ namespace dsp56k
 						const TWord address = XIO_DCR5 + index;
 						const TWord pc = 0x200 + index * 8;
 						const auto* xp = px.readAsPtr(address, Movep_ppea);
-						const auto* yp = py.readAsPtr(address, Movep_ppea);
-						verify(xp && yp && xp != yp);
+						verify(xp);
 						verify(*xp == px.read(address, Movep_ppea));
-						verify(*yp == py.read(address, Movep_ppea));
 						cpu.regs().r[0].var = address;
 						cpu.setPC(pc);
 						for(unsigned step = 0; step < 2; ++step)
@@ -406,13 +402,12 @@ namespace dsp56k
 							for(const auto value : {cpu.getInstructionCounter(), cpu.getCycles(), px.getTargetClock(), py.getTargetClock()})
 								state.push_back(value);
 							state.push_back(px.getDMA().getDSTR());
-							state.push_back(py.getDMA().getDSTR());
 							if(!direct) reference.push_back(state);
 							else { verify(state == reference.at(snapshotIndex)); ++comparisons; }
 							++snapshotIndex;
 						}
 						verify(cpu.getPC().var == endPC[index]);
-						verify(cpu.x0().var == *xp && cpu.y0().var == *yp);
+						verify(cpu.x0().var == *xp && cpu.y0().var == 0);
 						const auto* info = cpu.getJit().getBlockInfo(pc);
 						verify(info);
 						if(phase == 0 || phase == 4) cached[index] = info;
@@ -422,7 +417,7 @@ namespace dsp56k
 			}
 		}
 		std::cout << "DMA peripheral reads: " << comparisons
-			<< " exact return-boundary comparisons, live X/Y registers, cached blocks, reset and DMA requests passed." << std::endl;
+			<< " exact return-boundary comparisons, live X DMA/Y NOP, cached blocks, reset and DMA requests passed." << std::endl;
 	}
 
 	void JitUnittests::loopStateWriteback()
