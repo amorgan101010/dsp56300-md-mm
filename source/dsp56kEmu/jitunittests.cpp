@@ -313,7 +313,7 @@ namespace dsp56k
 
 				auto emitLocal = [&](const std::string& text, TWord pc)
 				{
-					const auto encoded = assembler.assemble(text);
+					const auto encoded = assembler.assemble(text.c_str());
 					verify(encoded.success());
 					for(unsigned i = 0; i < encoded.wordCount; ++i) cpu.memWriteP(pc++, encoded.word[i]);
 					return pc;
