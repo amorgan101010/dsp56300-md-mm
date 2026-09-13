@@ -398,10 +398,15 @@ namespace dsp56k
 							else if(entry == 1) cpu.getJit().getTrampoline().exec(&cpu, 1);
 							else cpu.execUntilCycles(cpu.getCycles() + 1);
 							const auto& r = cpu.regs();
-							std::vector<uint64_t> state{r.x.var, r.y.var, r.a.var, r.b.var,
-								r.pc.var, r.sr.var, r.la.var, r.lc.var, r.sp.var, r.sc.var,
-								cpu.getInstructionCounter(), cpu.getCycles(), px.getTargetClock(),
-								py.getTargetClock(), px.getDMA().getDSTR(), py.getDMA().getDSTR()};
+							std::vector<uint64_t> state;
+							for(const int64_t value : {r.x.var, r.y.var, r.a.var, r.b.var})
+								state.push_back(static_cast<uint64_t>(value));
+							for(const auto value : {r.pc.var, r.sr.var, r.la.var, r.lc.var, r.sp.var, r.sc.var})
+								state.push_back(static_cast<uint64_t>(value));
+							for(const auto value : {cpu.getInstructionCounter(), cpu.getCycles(), px.getTargetClock(), py.getTargetClock()})
+								state.push_back(value);
+							state.push_back(px.getDMA().getDSTR());
+							state.push_back(py.getDMA().getDSTR());
 							if(!direct) reference.push_back(state);
 							else { verify(state == reference.at(snapshotIndex)); ++comparisons; }
 							++snapshotIndex;
