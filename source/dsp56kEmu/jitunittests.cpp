@@ -326,9 +326,11 @@ namespace dsp56k
 					const TWord address = XIO_DCR5 + index;
 					std::stringstream operand;
 					operand << "<<$" << std::hex << address;
-					TWord pc = 0x200 + index * 8;
+					TWord pc = 0x200 + index * 16;
 					pc = emitLocal(dynamic ? "move x:(r0),x0" : "movep x:" + operand.str() + ",x0", pc);
 					pc = emitLocal(dynamic ? "move y:(r0),y0" : "movep y:" + operand.str() + ",y0", pc);
+					// The counted trampoline requires groups of eight entries.
+					for(unsigned i = 0; i < 6; ++i) pc = emitLocal("nop", pc);
 					endPC[index] = pc;
 				}
 
@@ -385,16 +387,16 @@ namespace dsp56k
 					for(unsigned index = 0; index < 24; ++index)
 					{
 						const TWord address = XIO_DCR5 + index;
-						const TWord pc = 0x200 + index * 8;
+						const TWord pc = 0x200 + index * 16;
 						const auto* xp = px.readAsPtr(address, Movep_ppea);
 						verify(xp);
 						verify(*xp == px.read(address, Movep_ppea));
 						cpu.regs().r[0].var = address;
 						cpu.setPC(pc);
-						for(unsigned step = 0; step < 2; ++step)
+						for(unsigned step = 0; step < 8; step += entry == 1 ? 8 : 1)
 						{
 							if(entry == 0) cpu.execJit();
-							else if(entry == 1) cpu.getJit().getTrampoline().exec(&cpu, 1);
+							else if(entry == 1) cpu.getJit().getTrampoline().exec(&cpu, 8);
 							else cpu.execUntilCycles(cpu.getCycles() + 1);
 							const auto& r = cpu.regs();
 							std::vector<uint64_t> state;
