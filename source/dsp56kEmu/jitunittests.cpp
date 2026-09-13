@@ -206,6 +206,7 @@ namespace dsp56k
 		for(const bool optimized : {false, true})
 		{
 			m_optimizeCcrSequences = optimized;
+			std::cout << "CCR mask/NZCV checks, optimized=" << optimized << std::endl;
 			// Include every CCR mask, not just masks encodable as logical immediates.
 			// The scratch-register fallback and mask zero must remain valid too.
 			for(unsigned mask = 0; mask < 256; ++mask)
@@ -241,6 +242,7 @@ namespace dsp56k
 				}
 
 			// BFI accepts an unmasked source for nonsticky destinations only.
+			std::cout << "CCR bit-copy checks, optimized=" << optimized << std::endl;
 			// Cover every source bit and destination, with deliberately dirty upper bits.
 			for(unsigned sourceBit = 0; sourceBit < 64; ++sourceBit)
 				for(unsigned destinationBit = 0; destinationBit < 8; ++destinationBit)
@@ -262,6 +264,7 @@ namespace dsp56k
 						++checks;
 					}
 
+			std::cout << "CCR clean-condition checks, optimized=" << optimized << std::endl;
 			for(unsigned scaling = 0; scaling < 4; ++scaling)
 				for(unsigned ccr = 0; ccr < 256; ++ccr)
 					for(const auto condition : conditions)
@@ -291,6 +294,7 @@ namespace dsp56k
 		// Differentially exercise each subset of pending lazy flags. Preserve the
 		// old update order, including V's sticky-L update, across scaling modes.
 		constexpr std::array<CCRMask, 5> dirtyFlags = {CCR_N, CCR_V, CCR_U, CCR_E, CCR_Z};
+		std::cout << "CCR lazy-condition differential checks" << std::endl;
 		for(unsigned scaling = 0; scaling < 4; ++scaling)
 			for(unsigned subset = 0; subset < 32; ++subset)
 				for(const uint64_t value : {0ull, 1ull, 0xffffffffffffffffull,
