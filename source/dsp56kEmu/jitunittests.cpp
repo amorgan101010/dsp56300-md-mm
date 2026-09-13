@@ -322,11 +322,15 @@ namespace dsp56k
 								block->setMode(nullptr);
 							}, [&]()
 							{
-								const std::array<uint64_t, 2> actual = {m_checks[0], dsp.getSR().var};
+								const std::array<uint64_t, 2> actual = {m_checks[0], static_cast<uint64_t>(dsp.getSR().var)};
 								if(optimized)
+								{
 									verify(actual == reference);
+								}
 								else
+								{
 									reference = actual;
+								}
 							});
 							++checks;
 						}
