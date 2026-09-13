@@ -68,6 +68,7 @@ namespace dsp56k
 		loopStateWriteback();
 		nopLoopSlices();
 		memoryBaseEntries();
+		peripheralDmaReads();
 	}
 
 	JitUnittests::~JitUnittests()
@@ -275,6 +276,148 @@ namespace dsp56k
 		dsp.getJit().destroyAllBlocks();
 		dsp.getJit().setConfig(oldConfig);
 		std::cout << "Memory base tests: exact internal X/Y and external X/Y/P aliases across all three trampoline entries passed." << std::endl;
+	}
+
+	void JitUnittests::peripheralDmaReads()
+	{
+		unsigned comparisons = 0;
+		for(const bool optimizer : {false, true})
+		for(const bool dynamic : {false, true})
+		for(const unsigned entry : {0u, 1u, 2u})
+		{
+			std::vector<std::vector<uint64_t>> reference;
+			for(const bool direct : {false, true})
+			{
+				// Each arm owns different peripheral objects. Native addresses must
+				// belong to that DSP, never another instance or a retired one.
+				DefaultMemoryValidator validator;
+				Memory memory(validator, 0x4000);
+				Peripherals56303 px, py;
+				DSP cpu(memory, &px, &py);
+				auto config = cpu.getJit().getConfig();
+				config.enableOptimizer = optimizer;
+				config.inlinePeripheralReads = direct;
+				config.linkJitBlocks = false;
+				config.dynamicPeripheralAddressing = true;
+				config.maxInstructionsPerBlock = 1;
+				cpu.getJit().setConfig(config);
+				cpu.setSR(0x30000);
+				px.resetDelayCycles(0, 1);
+				py.resetDelayCycles(0, 1);
+				px.clearCycleDeadline();
+				py.clearCycleDeadline();
+
+				for(const TWord address : {TWord(HDI08::HORX), TWord(Essi::ESSI0_RX),
+					TWord(Essi::ESSI1_RX), TWord(Essi::ESSI_PDRC), TWord(XIO_DSTR), TWord(XIO_IDR)})
+					verify(px.readAsPtr(address, Movep_ppea) == nullptr);
+
+				auto emitLocal = [&](const std::string& text, TWord pc)
+				{
+					const auto encoded = assembler.assemble(text);
+					verify(encoded.success());
+					for(unsigned i = 0; i < encoded.wordCount; ++i) cpu.memWriteP(pc++, encoded.word[i]);
+					return pc;
+				};
+				std::array<TWord, 24> endPC{};
+				for(unsigned index = 0; index < 24; ++index)
+				{
+					const TWord address = XIO_DCR5 + index;
+					std::stringstream operand;
+					operand << "<<$" << std::hex << address;
+					TWord pc = 0x200 + index * 8;
+					pc = emitLocal(dynamic ? "move x:(r0),x0" : "movep x:" + operand.str() + ",x0", pc);
+					pc = emitLocal(dynamic ? "move y:(r0),y0" : "movep y:" + operand.str() + ",y0", pc);
+					endPC[index] = pc;
+				}
+
+				size_t snapshotIndex = 0;
+				const TWord values[] = {0u, 0x7fffffu, 0x800000u, 0xffffffu, 0x345678u};
+				std::array<const JitBlockInfo*, 24> cached{};
+				for(unsigned phase = 0; phase < 10; ++phase)
+				{
+					if(phase == 4)
+					{
+						cpu.resetHW();
+						cpu.setSR(0x30000);
+						px.resetDelayCycles(0, 1);
+						py.resetDelayCycles(0, 1);
+					}
+					if(phase < 5)
+					{
+						for(unsigned index = 0; index < 24; ++index)
+						{
+							const TWord address = XIO_DCR5 + index;
+							const TWord mask = index % 4 == 0 ? 0x7fffff : 0xffffff; // leave DE disabled
+							px.write(address, values[phase] & mask);
+							py.write(address, (values[phase] ^ 0x123456) & mask);
+						}
+					}
+					else if(phase == 5)
+					{
+						for(unsigned side = 0; side < 2; ++side)
+						{
+							auto& dma = (side ? py : px).getDMA();
+							const TWord source = 0x800 + side * 0x200;
+							for(unsigned i = 0; i < 4; ++i) memory.set(MemArea_X, source + i, 0x765400 + side * 16 + i);
+							dma.setDCR(0, 0);
+							dma.setDSR(0, source);
+							dma.setDDR(0, source + 0x100);
+							dma.setDCO(0, 3);
+							dma.setDCR(0, (5u << DmaChannel::Dam0) | (5u << DmaChannel::Dam3)
+								| (1u << DmaChannel::Dtm0) | (1u << DmaChannel::De));
+						}
+					}
+					else
+					{
+						// Autonomous word requests modify already-compiled live reads.
+						for(unsigned side = 0; side < 2; ++side)
+						{
+							auto& dma = (side ? py : px).getDMA();
+							verify(dma.trigger(DmaChannel::RequestSource::ExternalIRQA));
+							const TWord source = 0x800 + side * 0x200;
+							verify(dma.getDSR(0) == source + phase - 5);
+							verify(dma.getDDR(0) == source + 0x100 + phase - 5);
+							verify(memory.get(MemArea_X, source + 0x100 + phase - 6) == 0x765400 + side * 16 + phase - 6);
+						}
+					}
+
+					for(unsigned index = 0; index < 24; ++index)
+					{
+						const TWord address = XIO_DCR5 + index;
+						const TWord pc = 0x200 + index * 8;
+						const auto* xp = px.readAsPtr(address, Movep_ppea);
+						const auto* yp = py.readAsPtr(address, Movep_ppea);
+						verify(xp && yp && xp != yp);
+						verify(*xp == px.read(address, Movep_ppea));
+						verify(*yp == py.read(address, Movep_ppea));
+						cpu.regs().r[0].var = address;
+						cpu.setPC(pc);
+						for(unsigned step = 0; step < 2; ++step)
+						{
+							if(entry == 0) cpu.execJit();
+							else if(entry == 1) cpu.getJit().getTrampoline().exec(&cpu, 1);
+							else cpu.execUntilCycles(cpu.getCycles() + 1);
+							const auto& r = cpu.regs();
+							std::vector<uint64_t> state{r.x.var, r.y.var, r.a.var, r.b.var,
+								r.pc.var, r.sr.var, r.la.var, r.lc.var, r.sp.var, r.sc.var,
+								cpu.getInstructionCounter(), cpu.getCycles(), px.getTargetClock(),
+								py.getTargetClock(), px.getDMA().getDSTR(), py.getDMA().getDSTR()};
+							if(!direct) reference.push_back(state);
+							else { verify(state == reference.at(snapshotIndex)); ++comparisons; }
+							++snapshotIndex;
+						}
+						verify(cpu.getPC().var == endPC[index]);
+						verify(cpu.x0().var == *xp && cpu.y0().var == *yp);
+						const auto* info = cpu.getJit().getBlockInfo(pc);
+						verify(info);
+						if(phase == 0 || phase == 4) cached[index] = info;
+						else verify(info == cached[index]);
+					}
+				}
+			}
+		}
+		std::cout << "DMA peripheral reads: " << comparisons
+			<< " exact return-boundary comparisons, live X/Y registers, cached blocks, reset and DMA requests passed." << std::endl;
 	}
 
 	void JitUnittests::loopStateWriteback()

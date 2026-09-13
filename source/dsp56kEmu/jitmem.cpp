@@ -659,7 +659,8 @@ namespace dsp56k
 
 		auto* periph = m_block.dsp().getPeriph(_area);
 
-		const auto* memPtr = periph->readAsPtr(_offset, _inst);
+		const auto* memPtr = m_block.getConfig().inlinePeripheralReads
+			? periph->readAsPtr(_offset, _inst) : nullptr;
 
 		if(memPtr)
 		{

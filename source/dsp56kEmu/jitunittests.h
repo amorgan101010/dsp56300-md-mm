@@ -78,6 +78,7 @@ namespace dsp56k
 		void loopStateWriteback();
 		void nopLoopSlices();
 		void memoryBaseEntries();
+		void peripheralDmaReads();
 
 		void emit(TWord _opA, TWord _opB = 0, TWord _pc = 0) override;
 		void execStep() override { dsp.execJit(); }

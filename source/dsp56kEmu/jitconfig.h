@@ -19,6 +19,9 @@ namespace dsp56k
 
 		uint32_t maxInstructionsPerBlock = 0;
 		bool memoryWritesCallCpp = false;
+		// Use live storage for immediate peripheral reads that explicitly support
+		// it. Disable for differential checks against the ordinary read handler.
+		bool inlinePeripheralReads = true;
 
 		// 16 bit compatibility mode for AGU operations are not supported by default, set to true if needed
 		bool support16BitSCMode = false;
