@@ -401,7 +401,7 @@ namespace dsp56k
 							std::vector<uint64_t> state;
 							for(const int64_t value : {r.x.var, r.y.var, r.a.var, r.b.var})
 								state.push_back(static_cast<uint64_t>(value));
-							for(const auto value : {r.pc.var, r.sr.var, r.la.var, r.lc.var, r.sp.var, r.sc.var})
+							for(const auto value : std::array<int64_t, 6>{r.pc.var, r.sr.var, r.la.var, r.lc.var, r.sp.var, r.sc.var})
 								state.push_back(static_cast<uint64_t>(value));
 							for(const auto value : {cpu.getInstructionCounter(), cpu.getCycles(), px.getTargetClock(), py.getTargetClock()})
 								state.push_back(value);
