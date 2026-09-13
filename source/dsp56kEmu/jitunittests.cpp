@@ -317,11 +317,19 @@ namespace dsp56k
 								JitDspMode mode;
 								mode.initialize(dsp);
 								block->setMode(&mode);
-								const RegGP r(*block);
-								block->asm_().mov(r64(r), asmjit::Imm(aluTestValue(value)));
-								ops->ccr_dirty(0, r64(r), mask);
-								ops->decode_cccc(r, condition);
-								block->mem().mov(m_checks[0], r.get());
+								{
+									const RegGP input(*block);
+									block->asm_().mov(r64(input), asmjit::Imm(aluTestValue(value)));
+									ops->ccr_dirty(0, r64(input), mask);
+								}
+								// Like a real branch, decode without retaining an unrelated
+								// temporary: the old lazy NR path needs all four GP temps.
+								const auto cc = ops->decode_cccc(condition);
+								{
+									const RegGP result(*block);
+									block->asm_().cset(r64(result), cc);
+									block->mem().mov(m_checks[0], r64(result));
+								}
 								ops->updateDirtyCCR();
 								block->setMode(nullptr);
 							}, [&]()
