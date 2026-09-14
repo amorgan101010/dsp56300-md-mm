@@ -1426,6 +1426,11 @@ namespace dsp56k
 
 	void DSP::clearOpcodeCache(const TWord _address)
 	{
+		// Boot transfers can address outside the configured P-memory range.
+		// Memory::set ignores those writes; do not index the interpreter cycle
+		// cache or grow JIT dispatch metadata for an address that was not written.
+		if(_address >= mem.sizeP())
+			return;
 		if(_address < m_opcodeCache.size())
 			m_opcodeCache[_address].op = &DSP::op_ResolveCache;
 		if constexpr(!g_useJIT)

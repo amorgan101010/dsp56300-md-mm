@@ -14,6 +14,7 @@ namespace dsp56k
 		void testCCCC(int64_t _val, int64_t _compareValue, bool _lt, bool _le, bool _eq, bool _ge, bool _gt, bool _neq);
 		void testOpcodeCacheAllocation();
 		void testBootOverwriteInvalidation();
+		void testBootOutOfRangeInvalidation();
 		void testCycleAccounting();
 
 		void runTest(const std::function<void()>& _build, const std::function<void()>& _verify) override;

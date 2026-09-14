@@ -11,6 +11,7 @@ namespace dsp56k
 	{
 		testOpcodeCacheAllocation();
 		testBootOverwriteInvalidation();
+		testBootOutOfRangeInvalidation();
 		testCCCC();
 		testSubr();
 		testCycleAccounting();
@@ -63,6 +64,32 @@ namespace dsp56k
 		dsp.x0(0);
 		dsp.execInterpreter();
 		verify(dsp.x0() == 0x220000);
+		verify(dsp.getPC() == pc + 1);
+		dsp.resetHW();
+	}
+
+	void InterpreterUnitTests::testBootOutOfRangeInvalidation()
+	{
+		constexpr TWord pc = 0x100;
+		dsp.resetHW();
+		emitToMemory("nop", pc);
+		dsp.setPC(pc);
+		dsp.execInterpreter();
+		const auto cachedOp = dsp.m_opcodeCache[pc].op;
+
+		// The first address outside configured P memory is ignored by Memory.
+		// In a forced-interpreter build it must not write one past the cycle
+		// cache. Do not execute the invalid PC installed by this synthetic boot.
+		for(const TWord address : {dsp.memory().sizeP(), dsp.memory().sizeP() + 1})
+		{
+			DspBoot boot(dsp);
+			verify(!boot.hdiWriteTX(1));
+			verify(!boot.hdiWriteTX(address));
+			verify(boot.hdiWriteTX(0));
+			verify(dsp.m_opcodeCache[pc].op == cachedOp);
+		}
+		dsp.setPC(pc);
+		dsp.execInterpreter();
 		verify(dsp.getPC() == pc + 1);
 		dsp.resetHW();
 	}
