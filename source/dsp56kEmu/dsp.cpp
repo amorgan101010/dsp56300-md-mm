@@ -104,7 +104,11 @@ namespace dsp56k
 		perif[0]->setSymbols(m_disasm);
 		perif[1]->setSymbols(m_disasm);
 
-		clearOpcodeCache();
+		// Normal JIT execution uses JitBlockChain's dispatch/cache structures and
+		// never reads the interpreter opcode cache. Keep that large per-PC table
+		// absent unless this build actually executes through the interpreter.
+		if constexpr(!g_useJIT)
+			clearOpcodeCache();
 
 		resetHW();
 	}
@@ -1099,7 +1103,9 @@ namespace dsp56k
 
 		const auto res = mem.set(MemArea_P, _offset, _value);
 
-		if (_offset < m_opcodeCache.size() && oldValue != _value)
+		// JIT invalidation is about valid P memory, not whether the optional
+		// interpreter cache exists. In JIT builds that cache normally stays empty.
+		if (_offset < mem.sizeP() && oldValue != _value)
 		{
 			notifyProgramMemWrite(_offset);
 			m_jit.notifyProgramMemWrite(_offset);
@@ -1124,7 +1130,11 @@ namespace dsp56k
 
 	void DSP::notifyProgramMemWrite(TWord _offset)
 	{
-		m_opcodeCache[_offset].op = &DSP::op_ResolveCache;
+		// The cache can exist in a JIT build when a test or diagnostic explicitly
+		// enters the interpreter. Invalidate it when present without allocating it
+		// for the ordinary JIT-only product path.
+		if(_offset < m_opcodeCache.size())
+			m_opcodeCache[_offset].op = &DSP::op_ResolveCache;
 		if constexpr(!g_useJIT)
 			m_opcodeCycleCache[_offset] = 0;
 
@@ -1416,7 +1426,13 @@ namespace dsp56k
 
 	void DSP::clearOpcodeCache(const TWord _address)
 	{
-		m_opcodeCache[_address].op = &DSP::op_ResolveCache;
+		// Boot transfers can address outside the configured P-memory range.
+		// Memory::set ignores those writes; do not index the interpreter cycle
+		// cache or grow JIT dispatch metadata for an address that was not written.
+		if(_address >= mem.sizeP())
+			return;
+		if(_address < m_opcodeCache.size())
+			m_opcodeCache[_address].op = &DSP::op_ResolveCache;
 		if constexpr(!g_useJIT)
 			m_opcodeCycleCache[_address] = 0;
 		m_jit.notifyProgramMemWrite(_address);
