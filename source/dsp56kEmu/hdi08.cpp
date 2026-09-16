@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "dsp.h"
 #include "interrupts.h"
 #include "hdi08.h"
