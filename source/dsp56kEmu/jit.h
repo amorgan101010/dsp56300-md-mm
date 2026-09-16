@@ -84,18 +84,6 @@ namespace dsp56k
 		const auto& getVolatileP()  { return m_volatileP; }
 		auto* getProfilingSupport() const { return m_profiling.get(); }
 
-		// Diagnostics: how often blocks are (re)created and destroyed and how many
-		// P memory write notifications arrived. Useful to spot JIT churn on
-		// self-modifying or overlaid DSP code.
-		struct Stats
-		{
-			uint64_t blocksCreated = 0;
-			uint64_t blocksDestroyed = 0;
-			uint64_t programMemWrites = 0;
-			size_t volatilePAddresses = 0;
-		};
-		Stats getStats() const { auto s = m_stats; s.volatilePAddresses = m_volatileP.size(); return s; }
-
 		bool isVolatileP(const TWord _pc) const
 		{
 			return m_volatileP.find(_pc) != m_volatileP.end();
@@ -152,7 +140,6 @@ namespace dsp56k
 
 		CowMemory m_dispatchTemplate;
 		std::set<TWord> m_volatileP;
-		Stats m_stats;
 		std::map<TWord, TWord> m_loops;
 		std::set<TWord> m_loopEnds;
 
