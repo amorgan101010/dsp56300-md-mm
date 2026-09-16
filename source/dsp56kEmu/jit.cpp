@@ -181,6 +181,7 @@ namespace dsp56k
 
 	void Jit::create(TWord _pc, bool _execute)
 	{
+		++m_stats.blocksCreated;
 		m_currentChain->create(_pc, _execute);
 	}
 
@@ -235,6 +236,7 @@ namespace dsp56k
 
 	void Jit::destroy(TWord _pc)
 	{
+		++m_stats.blocksDestroyed;
 		for (auto& it : m_chains)
 			it.second->destroy(_pc);
 	}
@@ -255,6 +257,7 @@ namespace dsp56k
 
 	void Jit::notifyProgramMemWrite(const TWord _offset)
 	{
+		++m_stats.programMemWrites;
 		for (auto& it : m_chains)
 			it.second->notifyPMemWrite(_offset, it.second.get() == m_currentChain);
 
