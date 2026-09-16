@@ -192,6 +192,17 @@ namespace dsp56k
 		// users retain their legacy behavior by default.
 		void setOnDemandTxWireSemantics(bool _enabled)	{ m_onDemandTxWireSemantics = _enabled; }
 		void setOnDemandRxWireSemantics(bool _enabled)	{ m_onDemandRxWireSemantics = _enabled; }
+		// A shared-clock integration may still need to advance its peer when
+		// On-Demand TX is idle. This callback creates no serial word or frame.
+		void setOnDemandTxIdleCallback(std::function<void()> _callback) { m_onDemandTxIdleCallback = std::move(_callback); }
+		// Independently opt in to collecting an already pending receive word
+		// when request DMA becomes enabled. Existing window/flush protocols keep
+		// their established DMA-enable contract until explicitly migrated.
+		void setPendingReceiveDmaOnEnable(bool _enabled) { m_pendingReceiveDmaOnEnable = _enabled; }
+		bool hasPendingReceiveDmaRequest() const
+		{
+			return m_pendingReceiveDmaOnEnable && m_sr.test(SSISR_RDF);
+		}
 
 		// A synchronous receiver advances only when its clock master has a word
 		// available. An unset callback preserves the legacy behavior.
@@ -288,6 +299,8 @@ namespace dsp56k
 		bool m_fastLinkRx = false;					// CRA-derived word period < base => fast TDM link RX
 		bool m_onDemandTxWireSemantics = false;		// MOD=1/DC=0 TX waits for fresh enabled registers
 		bool m_onDemandRxWireSemantics = false;		// fast RX skips empty from reset
+		bool m_pendingReceiveDmaOnEnable = false;
+		std::function<void()> m_onDemandTxIdleCallback;
 		bool m_fastLinkRxStarted = false;			// link delivered >=1 word; skip-on-empty active only after (boot-deadlock break)
 		std::function<bool()> m_rxDataAvailable;	// transport reports a pending RX word (synchronous link)
 		std::function<void()> m_rxConsumeCallback;	// RX read consumes the transport's staged word(s) end-to-end

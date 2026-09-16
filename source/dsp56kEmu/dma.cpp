@@ -42,6 +42,13 @@ namespace dsp56k
 
 		bool checkTrigger(Peripherals56303& _p, const RequestSource _src)
 		{
+			// RDF is a pending receive request, not just an arrival edge. When
+			// software arms DMA after a word arrived, consume that word before
+			// the next arrival can overwrite it. Keep legacy integrations opt-out.
+			if(_src == RequestSource::Essi0ReceiveData)
+				return _p.getEssi0().hasPendingReceiveDmaRequest();
+			if(_src == RequestSource::Essi1ReceiveData)
+				return _p.getEssi1().hasPendingReceiveDmaRequest();
 			return false;
 			switch (_src)
 			{
