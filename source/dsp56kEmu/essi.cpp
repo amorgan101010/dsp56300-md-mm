@@ -94,7 +94,11 @@ namespace dsp56k
 			m_sr.clear(RegSSISRbits::SSISR_TFS);
 			dmaTrigger(static_cast<uint32_t>(DmaChannel::RequestSource::Essi0TransmitData));
 			if((m_writtenTX & tem) != tem)
+			{
+				if(m_onDemandTxIdleCallback)
+					m_onDemandTxIdleCallback();
 				return;
+			}
 		}
 		// note that this transfers the data in TX that has been written to it before
 		writeSlotToFrame();
