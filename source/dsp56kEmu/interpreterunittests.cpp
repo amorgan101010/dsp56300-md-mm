@@ -2,17 +2,96 @@
 
 #include "agu.h"
 #include "dsp.h"
+#include "dspBootCode.h"
 #include "memory.h"
 
 namespace dsp56k
 {
 	InterpreterUnitTests::InterpreterUnitTests()
 	{
+		testOpcodeCacheAllocation();
+		testBootOverwriteInvalidation();
+		testBootOutOfRangeInvalidation();
 		testCCCC();
 		testSubr();
 		testCycleAccounting();
 		
 		runAllTests();
+	}
+
+	void InterpreterUnitTests::testOpcodeCacheAllocation()
+	{
+		if constexpr(g_useJIT)
+		{
+			verify(dsp.m_opcodeCache.empty());
+
+			// Explicit interpreter use in a JIT-capable diagnostic must lazily create
+			// the cache before the first dispatch and execute normally.
+			dsp.resetHW();
+			emitToMemory("nop", 0x100);
+			dsp.setPC(0x100);
+			dsp.execInterpreter();
+			verify(dsp.m_opcodeCache.size() == dsp.memory().sizeP());
+			verify(dsp.getPC() == 0x101);
+		}
+		else
+		{
+			verify(dsp.m_opcodeCache.size() == dsp.memory().sizeP());
+		}
+	}
+
+	void InterpreterUnitTests::testBootOverwriteInvalidation()
+	{
+		constexpr TWord pc = 0x100;
+
+		// Resolve and cache NOP through the interpreter before the boot loader
+		// replaces the same P-memory address with a different instruction.
+		dsp.resetHW();
+		emitToMemory("nop", pc);
+		dsp.setPC(pc);
+		dsp.execInterpreter();
+		verify(dsp.getPC() == pc + 1);
+
+		const auto replacement = assembler.assemble("move #$22,x0");
+		verify(replacement.success() && replacement.wordCount == 1);
+
+		DspBoot boot(dsp);
+		verify(!boot.hdiWriteTX(replacement.wordCount));
+		verify(!boot.hdiWriteTX(pc));
+		verify(boot.hdiWriteTX(replacement.word[0]));
+		verify(dsp.memRead(MemArea_P, pc) == replacement.word[0]);
+
+		dsp.x0(0);
+		dsp.execInterpreter();
+		verify(dsp.x0() == 0x220000);
+		verify(dsp.getPC() == pc + 1);
+		dsp.resetHW();
+	}
+
+	void InterpreterUnitTests::testBootOutOfRangeInvalidation()
+	{
+		constexpr TWord pc = 0x100;
+		dsp.resetHW();
+		emitToMemory("nop", pc);
+		dsp.setPC(pc);
+		dsp.execInterpreter();
+		const auto cachedOp = dsp.m_opcodeCache[pc].op;
+
+		// The first address outside configured P memory is ignored by Memory.
+		// In a forced-interpreter build it must not write one past the cycle
+		// cache. Do not execute the invalid PC installed by this synthetic boot.
+		for(const TWord address : {dsp.memory().sizeP(), dsp.memory().sizeP() + 1})
+		{
+			DspBoot boot(dsp);
+			verify(!boot.hdiWriteTX(1));
+			verify(!boot.hdiWriteTX(address));
+			verify(boot.hdiWriteTX(0));
+			verify(dsp.m_opcodeCache[pc].op == cachedOp);
+		}
+		dsp.setPC(pc);
+		dsp.execInterpreter();
+		verify(dsp.getPC() == pc + 1);
+		dsp.resetHW();
 	}
 
 	void InterpreterUnitTests::testCycleAccounting()

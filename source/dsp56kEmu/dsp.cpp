@@ -104,7 +104,11 @@ namespace dsp56k
 		perif[0]->setSymbols(m_disasm);
 		perif[1]->setSymbols(m_disasm);
 
-		clearOpcodeCache();
+		// Normal JIT execution uses JitBlockChain's dispatch/cache structures and
+		// never reads the interpreter opcode cache. Keep that large per-PC table
+		// absent unless this build actually executes through the interpreter.
+		if constexpr(!g_useJIT)
+			clearOpcodeCache();
 
 		resetHW();
 	}
@@ -242,6 +246,7 @@ namespace dsp56k
 			LOGJITPC(vba);
 			const auto pc = getPC();
 			m_jit.getTrampoline().execOne(&reg, vba, m_jitEntries[vba]);
+
 			if(m_processingMode != LongInterrupt)
 			{
 				m_processingMode = DefaultPreventInterrupt;
@@ -549,11 +554,11 @@ namespace dsp56k
 	// _____________________________________________________________________________
 	// exec_do
 	//
-	bool DSP::do_exec( TWord _loopcount, TWord _addr )
+	bool DSP::do_exec( TWord _loopcount, TWord _addr, const bool _forever )
 	{
 	//	LOG( "DO BEGIN: " << (int)sc.var << ", loop flag = " << sr_test(SR_LF) );
 
-		if( !_loopcount )
+		if( !_forever && !_loopcount )
 		{
 			if( sr_test_noCache( SR_SC ) )
 				_loopcount = 65536;
@@ -568,13 +573,24 @@ namespace dsp56k
 		ssl(reg.lc);
 
 		reg.la.var = _addr;
-		reg.lc.var = _loopcount;
+
+		// DO FOREVER leaves LC alone, it never counts
+		if(!_forever)
+			reg.lc.var = _loopcount;
 
 		pushPCSR();
 
 		const auto stackCount = reg.sc.var;
-		
-		sr_set( SR_LF );
+
+		// SR_FV describes the loop that is starting: a counted DO nested in a DO FOREVER has to clear
+		// it or its loop end would never terminate either. do_end() restores both flags from the stack.
+		if(_forever)
+			sr_set( static_cast<CCRMask>(SR_LF | SR_FV) );
+		else
+		{
+			sr_clear( SR_FV );
+			sr_set( SR_LF );
+		}
 
 		if constexpr(!g_useJIT)
 			m_cycles += getOpcodeCycles(pcCurrentInstruction);
@@ -595,8 +611,23 @@ namespace dsp56k
 			if(reg.pc.var != (reg.la.var+1))
 				continue;
 
+			// The loop only ends when execution falls off its last instruction. Hardware decides that
+			// at the fetch of the word at LA, so a jump that merely lands at LA+1 does not count. The
+			// Nord Modular kernel has its IRQD handler right behind an idle DO FOREVER loop: the
+			// interrupt's JSR arrives at LA+1 and was taken for a loop end, which "returned" through
+			// the interrupt's stack frame and left the DSP in long-interrupt mode for good.
+			if(reg.pc.var != pcCurrentInstruction + m_currentOpLen)
+				continue;
+
 			if(!sr_test_noCache(SR_LF))
 				break;
+
+			// a forever loop never terminates on the counter, only ENDDO / BRKcc leave it
+			if(sr_test_noCache(SR_FV))
+			{
+				setPC(hiword(reg.ss[ssIndex()]));
+				continue;
+			}
 
 			if( reg.lc.var <= 1 )
 			{
@@ -1099,7 +1130,9 @@ namespace dsp56k
 
 		const auto res = mem.set(MemArea_P, _offset, _value);
 
-		if (_offset < m_opcodeCache.size() && oldValue != _value)
+		// JIT invalidation is about valid P memory, not whether the optional
+		// interpreter cache exists. In JIT builds that cache normally stays empty.
+		if (_offset < mem.sizeP() && oldValue != _value)
 		{
 			notifyProgramMemWrite(_offset);
 			m_jit.notifyProgramMemWrite(_offset);
@@ -1124,7 +1157,11 @@ namespace dsp56k
 
 	void DSP::notifyProgramMemWrite(TWord _offset)
 	{
-		m_opcodeCache[_offset].op = &DSP::op_ResolveCache;
+		// The cache can exist in a JIT build when a test or diagnostic explicitly
+		// enters the interpreter. Invalidate it when present without allocating it
+		// for the ordinary JIT-only product path.
+		if(_offset < m_opcodeCache.size())
+			m_opcodeCache[_offset].op = &DSP::op_ResolveCache;
 		if constexpr(!g_useJIT)
 			m_opcodeCycleCache[_offset] = 0;
 
@@ -1416,7 +1453,13 @@ namespace dsp56k
 
 	void DSP::clearOpcodeCache(const TWord _address)
 	{
-		m_opcodeCache[_address].op = &DSP::op_ResolveCache;
+		// Boot transfers can address outside the configured P-memory range.
+		// Memory::set ignores those writes; do not index the interpreter cycle
+		// cache or grow JIT dispatch metadata for an address that was not written.
+		if(_address >= mem.sizeP())
+			return;
+		if(_address < m_opcodeCache.size())
+			m_opcodeCache[_address].op = &DSP::op_ResolveCache;
 		if constexpr(!g_useJIT)
 			m_opcodeCycleCache[_address] = 0;
 		m_jit.notifyProgramMemWrite(_address);
