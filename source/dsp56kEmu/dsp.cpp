@@ -649,8 +649,10 @@ namespace dsp56k
 	//
 	bool DSP::do_end()
 	{
-		// restore previous loop flag
+		// restore the enclosing loop's flags: do_exec() clears FV for a counted DO, so a DO nested in a
+		// DO FOREVER must get FV back here or the outer forever loop ends on its counter
 		sr_toggle( SR_LF, (ssl().var & SR_LF) != 0 );
+		sr_toggle( SR_FV, (ssl().var & SR_FV) != 0 );
 
 		// decrement SP twice, restoring old loop settings
 		decSP();

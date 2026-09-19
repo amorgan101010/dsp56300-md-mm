@@ -457,6 +457,8 @@ namespace dsp56k
 
 			pushPCSR();
 
+			// a counted DO clears FV (it may be nested in a DO FOREVER), do_end() restores it from the stack
+			m_asm.and_(r32(m_dspRegs.getSR(JitDspRegs::ReadWrite)), asmjit::Imm(~SR_FV));
 			m_asm.or_(m_dspRegs.getSR(JitDspRegs::ReadWrite), asmjit::Imm(SR_LF));
 		};
 
@@ -487,11 +489,11 @@ namespace dsp56k
 	}
 	void JitOps::do_end(const RegGP& r)
 	{
-		// restore previous loop flag
+		// restore the enclosing loop's flags (LF and FV) from the stacked SR
 		{
 			m_dspRegs.getSS(r64(r.get()));
-			m_asm.and_(r32(r), asmjit::Imm(SR_LF));
-			m_asm.and_(r32(m_dspRegs.getSR(JitDspRegs::ReadWrite)), asmjit::Imm(~SR_LF));
+			m_asm.and_(r32(r), asmjit::Imm(SR_LF | SR_FV));
+			m_asm.and_(r32(m_dspRegs.getSR(JitDspRegs::ReadWrite)), asmjit::Imm(~(SR_LF | SR_FV)));
 			m_asm.or_(r32(m_dspRegs.getSR(JitDspRegs::ReadWrite)), r32(r.get()));
 		}
 
