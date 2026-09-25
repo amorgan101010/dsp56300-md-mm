@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 
 #include "disasm.h"
@@ -127,6 +128,8 @@ namespace dsp56k
 		RingBuffer<TWord, 32, false>				m_pendingExternalInterrupts;
 #endif
 
+		bool										m_iprInterruptModel = false;
+		std::array<uint16_t, 128>					m_pendingHostCommands{};	// per vector (vba / 2): host-command requests not yet serviced
 		std::vector<std::function<void()>>			m_customInterrupts;
 		std::function<bool()>						m_externalInterruptAbort;	// see setExternalInterruptAbortPredicate
 		std::function<void(TWord)>					m_interruptServicedCallback;	// see setInterruptServicedCallback
@@ -380,8 +383,16 @@ namespace dsp56k
 
 		TWord			registerInterruptFunc			(std::function<void()>&& _func);
 		bool			injectInterrupt					(uint32_t _interruptVectorAddress);
+		// Honour IPRC/IPRP (DSP56300FM 2.3.2, Figure 2-2, Table 2-4): IRQA-D and DMA0-5 take their enable
+		// and level from IPRC, host commands take HPL from IPRP whatever vector they use, and a request is
+		// accepted when its level is at least the SR mask. Disabled sources never request service. Other
+		// sources keep the legacy fixed levels. Off by default; hosts whose firmware relies on disabled
+		// interrupt sources staying quiet (Machinedrum/Monomachine) switch it on.
+		void			setIprInterruptModel			(bool _enabled)	{ m_iprInterruptModel = _enabled; }
+		bool			iprInterruptModel				() const		{ return m_iprInterruptModel; }
 		bool			injectInterruptImmediate		(uint32_t _interruptVectorAddress);
 		bool			isInterruptMasked				(const TWord _vba) const;
+		int				interruptLevel					(TWord _vba) const;	// -1 = disabled source, 3 = nonmaskable
 
 		void			injectExternalInterrupt			(const TWord _vba);
 		void			processExternalInterrupts		();

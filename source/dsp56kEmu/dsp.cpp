@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <map>
 #include <cstring>
 // DSP 56300 family 24-bit DSP emulator
 
@@ -239,6 +240,35 @@ namespace dsp56k
 
 	void DSP::execInterrupt(const TWord vba)
 	{
+		// TEMPORARY diagnostic (not for commit): OCTFIX_VECCENSUS=1 counts serviced vectors per DSP.
+		{
+			static const bool census = std::getenv("OCTFIX_VECCENSUS") != nullptr;
+			struct Census
+			{
+				struct Entry { uint64_t count = 0, first = 0, last = 0; TWord iprc = 0, iprp = 0; };
+				std::map<const DSP*, std::map<TWord, Entry>> counts;
+				~Census()
+				{
+					for(const auto& [dsp, m] : counts)
+						for(const auto& [v, e] : m)
+							std::fprintf(stderr, "VECCENSUS dsp=%p vba=%02x count=%llu first=%llu last=%llu iprc=%06x iprp=%06x\n", static_cast<const void*>(dsp), v,
+								static_cast<unsigned long long>(e.count), static_cast<unsigned long long>(e.first), static_cast<unsigned long long>(e.last), e.iprc, e.iprp);
+				}
+			};
+			static Census s_census;
+			if(census)
+			{
+				auto& e = s_census.counts[this][vba];
+				if(!e.count)
+					e.first = m_cycles;
+				++e.count;
+				e.last = m_cycles;
+				e.iprc = iprc();
+				e.iprp = iprp();
+			}
+		}
+		if(m_iprInterruptModel && vba < 256 && m_pendingHostCommands[vba >> 1])
+			--m_pendingHostCommands[vba >> 1];
 		pcCurrentInstruction = vba;
 		m_processingMode = FastInterrupt;
 
@@ -1381,6 +1411,10 @@ namespace dsp56k
 
 	bool DSP::injectInterrupt(uint32_t _interruptVectorAddress)
 	{
+		// A disabled source only sets its status flag; it never requests service (DSP56300FM Table 2-4).
+		if(m_iprInterruptModel && _interruptVectorAddress < Vba_End && interruptLevel(_interruptVectorAddress) < 0)
+			return false;
+
 		m_pendingInterrupts.push_back({_interruptVectorAddress});
 
 		if(m_interruptFunc == m_execPeripheralsFunc)
@@ -1404,11 +1438,39 @@ namespace dsp56k
 
 	bool DSP::isInterruptMasked(const TWord _vba) const
 	{
-		const auto minPrio = mr().var & 0x3;
+		const auto minPrio = static_cast<int>(mr().var & 0x3);
+
+		if(m_iprInterruptModel)
+		{
+			const auto level = interruptLevel(_vba);
+			return level < 0 || level < minPrio;
+		}
 
 		const auto prio = _vba < Vba_IRQA ? 3 : 2;
 
 		return prio < minPrio;
+	}
+
+	int DSP::interruptLevel(const TWord _vba) const
+	{
+		// IPL field: 00 disabled, 01/10/11 = IPL 0/1/2 (DSP56300FM Table 2-4).
+		const auto field = [](const TWord _reg, const uint32_t _shift) { return static_cast<int>((_reg >> _shift) & 3) - 1; };
+
+		// Host commands may use any vector; their level is the host port's (HPL, IPRP bits 1-0).
+		if(_vba < 256 && m_pendingHostCommands[_vba >> 1])
+			return field(iprp(), 0);
+
+		if(_vba < Vba_IRQA)
+			return 3;
+		if(_vba <= Vba_IRQD)
+		{
+			static constexpr uint32_t shift[4] = {0, 3, 6, 9};	// IAL, IBL, ICL, IDL (bit 2 of each is the trigger mode)
+			return field(iprc(), shift[(_vba - Vba_IRQA) >> 1]);
+		}
+		if(_vba >= Vba_DMAchannel0 && _vba <= Vba_DMAchannel5)
+			return field(iprc(), 12 + ((_vba - Vba_DMAchannel0) >> 1) * 2);
+
+		return 2;	// sources not modelled here keep the legacy fixed level
 	}
 
 	void DSP::injectExternalInterrupt(const TWord _vba)
@@ -1429,6 +1491,8 @@ namespace dsp56k
 		{
 			m_pendingExternalInterrupts.waitNotFull();
 		}
+		if(m_iprInterruptModel && _vba < 256)
+			++m_pendingHostCommands[_vba >> 1];
 		m_pendingExternalInterrupts.push_back(_vba);
 		// EXPERIMENT (single scheduler thread only): take the interrupt at the next block
 		// boundary instead of whenever the peripherals next happen to wake.
