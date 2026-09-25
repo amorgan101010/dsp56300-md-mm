@@ -161,6 +161,12 @@ namespace dsp56k
 		// derived on the DSP thread to avoid a cross-thread read-modify-write.
 		m_hostCommandVba.store(_vba, std::memory_order_relaxed);
 		m_hostCommandPending.store(true, std::memory_order_release);
+		if(m_hostCommandHold && m_hostCommandHold(_vba))
+		{
+			m_hostCommandHeld = true;
+			m_periph.setDelayCycles(0);
+			return;
+		}
 		m_periph.getDSP().injectExternalInterrupt(_vba);
 	}
 
@@ -226,6 +232,15 @@ namespace dsp56k
 	uint32_t HDI08::exec() noexcept
 	{
 		pollHostCommandCompletion();
+
+		if(m_hostCommandHeld)
+		{
+			const auto vba = m_hostCommandVba.load(std::memory_order_relaxed);
+			if(m_hostCommandHold && m_hostCommandHold(vba))
+				return 0;	// re-check at the next block boundary
+			m_hostCommandHeld = false;
+			m_periph.getDSP().injectExternalInterrupt(vba);
+		}
 
 		// EXPERIMENT: completion is only observed by polling, so poll at every block
 		// boundary while a command is in flight, independent of other wake-ups.

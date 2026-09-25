@@ -213,6 +213,11 @@ namespace dsp56k
 			return m_hostCommandAcceptedCycle.load(std::memory_order_acquire);
 		}
 
+		// Optional: hold a host command (HCP stays set, the host keeps seeing HC) while the predicate returns
+		// true for its vector, and dispatch it as soon as it returns false. Polled at every block boundary
+		// while a command is held. Used as an opt-in workaround by hosts that need it.
+		void setHostCommandHoldPredicate(std::function<bool(TWord)> _predicate) { m_hostCommandHold = std::move(_predicate); }
+
 		// A command remains busy through interrupt return.
 		bool hostCommandBusy() const
 		{
@@ -270,6 +275,8 @@ namespace dsp56k
 		TWord	m_hcReturnSsIndex = 0;				// stack index at dispatch; handler has returned at <=
 		bool	m_hcEntered = false;				// observed the handler raise the stack (long interrupt)
 		std::atomic<bool>	m_hostCommandInFlight{false};	// command vector dispatched; handler not yet returned
+		std::function<bool(TWord)>	m_hostCommandHold;
+		bool				m_hostCommandHeld = false;
 		std::atomic<bool>	m_hostCommandHasQueued{false};	// a second command is waiting behind the in-flight one
 		std::atomic<TWord>	m_hostCommandQueuedVba{0};
 		std::atomic<uint64_t> m_hostCommandAcceptedCycle{0};

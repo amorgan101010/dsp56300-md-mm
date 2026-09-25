@@ -129,6 +129,9 @@ namespace dsp56k
 #endif
 
 		bool										m_iprInterruptModel = false;
+		TWord										m_pcWatchA = 0xffffffff;
+		TWord										m_pcWatchB = 0xffffffff;
+		std::function<void(TWord)>					m_pcWatch;
 		std::array<uint16_t, 128>					m_pendingHostCommands{};	// per vector (vba / 2): host-command requests not yet serviced
 		std::vector<std::function<void()>>			m_customInterrupts;
 		std::function<bool()>						m_externalInterruptAbort;	// see setExternalInterruptAbortPredicate
@@ -276,6 +279,8 @@ namespace dsp56k
 			LOGJITPC(pc);
 			if(ASMJIT_UNLIKELY(g_pcTraceHook != nullptr))	// TEMPORARY diagnostic (not for commit)
 				g_pcTraceHook(this, pc);
+			if(ASMJIT_UNLIKELY(pc == m_pcWatchA || pc == m_pcWatchB))
+				m_pcWatch(pc);
 
 			// SAFETY NET: the JIT dispatch table only spans valid P memory. A PC outside of it (a jump/jsr to a
 			// garbage address, caused by corrupt emulated data or a genuine emulation bug) would index the table
@@ -389,6 +394,14 @@ namespace dsp56k
 		// sources keep the legacy fixed levels. Off by default; hosts whose firmware relies on disabled
 		// interrupt sources staying quiet (Machinedrum/Monomachine) switch it on.
 		void			setIprInterruptModel			(bool _enabled)	{ m_iprInterruptModel = _enabled; }
+		// Call _callback when the JIT dispatcher is about to run a block starting at _pcA or _pcB. Only the
+		// per-block dispatcher (exec()) checks this, not execUntilCycles(); hosts that rely on it must use exec().
+		void			setPcWatch						(TWord _pcA, TWord _pcB, std::function<void(TWord)> _callback)
+		{
+			m_pcWatch = std::move(_callback);
+			m_pcWatchA = m_pcWatch ? _pcA : 0xffffffff;
+			m_pcWatchB = m_pcWatch ? _pcB : 0xffffffff;
+		}
 		bool			iprInterruptModel				() const		{ return m_iprInterruptModel; }
 		bool			injectInterruptImmediate		(uint32_t _interruptVectorAddress);
 		bool			isInterruptMasked				(const TWord _vba) const;
