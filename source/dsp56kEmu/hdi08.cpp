@@ -529,6 +529,9 @@ namespace dsp56k
 
 	void HDI08::writeTX(const TWord _val)
 	{
+		if(g_hostLog)
+			hostLogRotate(); if(g_hostLog && g_hostLogOn) std::fprintf(g_hostLog, "DT %p %llu pc=%06x val=%06x\n", static_cast<void*>(&m_periph.getDSP()),
+				static_cast<unsigned long long>(m_periph.getDSP().getCycles()), m_periph.getDSP().getPC().toWord(), _val);
 		if(!m_transmitDataAlwaysEmpty && !m_dataTX.empty() && (!m_transmitDataBuffered || m_dataTX.full()))
 		{
 			m_dataTX.front() = _val;

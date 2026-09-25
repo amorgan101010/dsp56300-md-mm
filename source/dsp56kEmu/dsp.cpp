@@ -257,6 +257,10 @@ namespace dsp56k
 				}
 			};
 			static Census s_census;
+			// OCTFIX_VECLOG=1: time-stamp DMA1/DMA4 ($1a/$20) and host-command ($0c-$14) vector entries.
+			static const bool vecLog = std::getenv("OCTFIX_VECLOG") != nullptr;
+			if(vecLog && (vba == 0x1a || vba == 0x20 || (vba >= 0x0c && vba <= 0x14)))
+				std::printf("VL %p %02x %llu\n", static_cast<const void*>(this), vba, static_cast<unsigned long long>(m_cycles));
 			if(census)
 			{
 				auto& e = s_census.counts[this][vba];
