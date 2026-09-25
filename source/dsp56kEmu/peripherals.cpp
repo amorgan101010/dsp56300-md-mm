@@ -1,3 +1,5 @@
+#include <string>
+#include <cstdlib>
 #include "peripherals.h"
 
 #include "aar.h"
@@ -117,6 +119,7 @@ namespace dsp56k
 	{
 		m_delayCycles = std::min(m_delayCycles, _delayCycles);
 		m_targetClock = m_dsp->getInstructionCounter() + m_delayCycles;
+		m_bisectExternalWake = true;
 	}
 
 	void IPeripherals::setCycleDeadline(const uint32_t _delayCycles) noexcept
@@ -396,21 +399,53 @@ namespace dsp56k
 
 	uint32_t Peripherals56303::exec() noexcept
 	{
+		// TEMPORARY bisection (not for commit): OCTFIX_BISECT=hdi|timer|dma|all|none
+		static const int bisect = []
+		{
+			const char* v = std::getenv("OCTFIX_BISECT");
+			if(!v) return -1;
+			const std::string s(v);
+			return s == "hdi" ? 1 : s == "timer" ? 2 : s == "dma" ? 4 : s == "all" ? 7 : 0;
+		}();
+		const auto ic = getDSP().getInstructionCounter();
+		const auto cyc = getDSP().getCycles();
+		const bool cycleDue = m_bisectHadCycleDeadline && cyc >= m_bisectCycleTarget;
+		const bool external = m_bisectExternalWake;
+		m_bisectExternalWake = false;
+
 		auto essiDelay = m_essiClock.exec();
+		const auto legacyEssiDelay = essiDelay;
 		if(m_essiClock.usesExactCycleDeadline())
 		{
 			setCycleDeadline(m_essiClock.getNextCycleDeadline());
+			m_bisectHadCycleDeadline = true;
+			m_bisectCycleTarget = cyc + m_essiClock.getNextCycleDeadline();
 			// The remaining sources express instruction-domain delays. Do not mix
 			// their units with the ESSI's cycle-domain serial edge.
-			essiDelay = MaxDelayCycles;
+			essiDelay = bisect >= 0 ? legacyEssiDelay : MaxDelayCycles;
 		}
 		else
 		{
 			clearCycleDeadline();
+			m_bisectHadCycleDeadline = false;
 		}
-		const auto hdiDelay = m_hi08.exec();
-		const auto timerDelay = m_timers.exec();
-		const auto dmaDelay = m_dma.exec();
+
+		const bool legit = bisect < 0 || external || cycleDue
+			|| ic >= m_bisectDue[0] || ic >= m_bisectDue[1] || ic >= m_bisectDue[2];
+		const int runMask = legit ? 7 : bisect;
+		auto run = [&](const int _bit, const int _slot, auto&& _exec) -> uint32_t
+		{
+			if(runMask & _bit)
+			{
+				const uint32_t d = _exec();
+				m_bisectDue[_slot] = ic + d;
+				return d;
+			}
+			return m_bisectDue[_slot] > ic ? static_cast<uint32_t>(std::min<uint64_t>(m_bisectDue[_slot] - ic, MaxDelayCycles)) : 0;
+		};
+		const auto hdiDelay = run(1, 0, [&] { return m_hi08.exec(); });
+		const auto timerDelay = run(2, 1, [&] { return m_timers.exec(); });
+		const auto dmaDelay = run(4, 2, [&] { return m_dma.exec(); });
 		const auto delay = std::min({essiDelay, hdiDelay, timerDelay, dmaDelay});
 		return delay;
 	}

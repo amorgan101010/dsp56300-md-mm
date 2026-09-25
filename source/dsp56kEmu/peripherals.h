@@ -138,6 +138,9 @@ namespace dsp56k
 		uint32_t m_delayCycles = 0;
 		uint64_t m_targetClock = 0;
 		uint64_t m_targetCycle = 0;
+	public:
+		bool m_bisectExternalWake = false;	// TEMPORARY bisection (not for commit)
+	private:
 		bool m_hasCycleDeadline = false;
 		PeripheralType m_type;
 	};
@@ -207,6 +210,9 @@ namespace dsp56k
 		Essi m_essi0;
 		Essi m_essi1;
 		HDI08 m_hi08;
+		uint64_t m_bisectDue[3] = {0, 0, 0};
+		uint64_t m_bisectCycleTarget = 0;
+		bool m_bisectHadCycleDeadline = false;
 		Timers m_timers;
 		EssiPort m_portC;
 		EssiPort m_portD;
