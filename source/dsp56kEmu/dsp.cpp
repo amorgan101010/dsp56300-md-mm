@@ -44,6 +44,7 @@
 
 namespace dsp56k
 {
+	void (*g_pcTraceHook)(const DSP*, uint32_t) = nullptr;
 	// TEMPORARY toggle for bisecting the cadence fixes (not for commit).
 	inline bool octfixOff(const char* _name)
 	{

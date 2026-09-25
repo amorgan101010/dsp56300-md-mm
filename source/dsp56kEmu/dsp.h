@@ -21,6 +21,9 @@
 
 namespace dsp56k
 {
+	class DSP;
+	// TEMPORARY diagnostic (not for commit): called with every JIT block's start PC when set.
+	extern void (*g_pcTraceHook)(const DSP*, uint32_t);
 	class Memory;
 	class InterpreterUnitTests;
 	class JitUnittests;
@@ -268,6 +271,8 @@ namespace dsp56k
 
 			const auto pc = getPC().toWord();
 			LOGJITPC(pc);
+			if(ASMJIT_UNLIKELY(g_pcTraceHook != nullptr))	// TEMPORARY diagnostic (not for commit)
+				g_pcTraceHook(this, pc);
 
 			// SAFETY NET: the JIT dispatch table only spans valid P memory. A PC outside of it (a jump/jsr to a
 			// garbage address, caused by corrupt emulated data or a genuine emulation bug) would index the table
