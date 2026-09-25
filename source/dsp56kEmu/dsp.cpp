@@ -47,10 +47,11 @@ namespace dsp56k
 {
 	void (*g_pcTraceHook)(const DSP*, uint32_t) = nullptr;
 	// TEMPORARY toggle for bisecting the cadence fixes (not for commit).
+	// Experimental cadence fixes are opt-in: OCTFIX_ON=irq,hdi,timer (any subset) enables them.
 	inline bool octfixOff(const char* _name)
 	{
-		const char* v = std::getenv("OCTFIX_OFF");
-		return v && std::strstr(v, _name) != nullptr;
+		const char* v = std::getenv("OCTFIX_ON");
+		return !v || std::strstr(v, _name) == nullptr;
 	}
 }
 namespace dsp56k
