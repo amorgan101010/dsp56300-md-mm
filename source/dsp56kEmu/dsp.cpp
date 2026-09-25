@@ -1,3 +1,5 @@
+#include <cstdlib>
+#include <cstring>
 // DSP 56300 family 24-bit DSP emulator
 
 #include "dsp.h"
@@ -40,6 +42,15 @@
 
 //
 
+namespace dsp56k
+{
+	// TEMPORARY toggle for bisecting the cadence fixes (not for commit).
+	inline bool octfixOff(const char* _name)
+	{
+		const char* v = std::getenv("OCTFIX_OFF");
+		return v && std::strstr(v, _name) != nullptr;
+	}
+}
 namespace dsp56k
 {
 	constexpr bool g_traceSupported = false;
@@ -1418,6 +1429,11 @@ namespace dsp56k
 			m_pendingExternalInterrupts.waitNotFull();
 		}
 		m_pendingExternalInterrupts.push_back(_vba);
+		// EXPERIMENT (single scheduler thread only): take the interrupt at the next block
+		// boundary instead of whenever the peripherals next happen to wake.
+		static const bool off = octfixOff("irq");
+		if(!off)
+			perif[0]->setDelayCycles(0);
 	}
 
 	void DSP::processExternalInterrupts()

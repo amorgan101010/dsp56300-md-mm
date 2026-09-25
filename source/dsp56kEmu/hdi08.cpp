@@ -1,8 +1,42 @@
+#include <cstdlib>
+#include <cstring>
 #include <cstdio>
 #include "dsp.h"
+#include <string>
+
+namespace dsp56k
+{
+	// TEMPORARY host-port trace (not for commit): OCTFIX_HOSTLOG=<file>. Rotates between
+	// <file>.0 and <file>.1 every ~300 MB so only the tail of a long run is kept.
+	FILE* g_hostLog = []() -> FILE*
+	{
+		const char* p = std::getenv("OCTFIX_HOSTLOG");
+		return p ? std::fopen((std::string(p) + ".0").c_str(), "w") : nullptr;
+	}();
+	bool g_hostLogOn = false;	// set by the md side inside the OCTFIX_HOSTLOG_FROM/_TO window
+	void hostLogRotate()
+	{
+		static int n = 0;
+		static unsigned calls = 0;
+		if((++calls & 0xffff) || !g_hostLog || std::ftell(g_hostLog) < 300l * 1024 * 1024)
+			return;
+		std::fclose(g_hostLog);
+		n ^= 1;
+		g_hostLog = std::fopen((std::string(std::getenv("OCTFIX_HOSTLOG")) + (n ? ".1" : ".0")).c_str(), "w");
+	}
+}
 #include "interrupts.h"
 #include "hdi08.h"
 
+namespace dsp56k
+{
+	// TEMPORARY toggle for bisecting the cadence fixes (not for commit).
+	inline bool octfixOff(const char* _name)
+	{
+		const char* v = std::getenv("OCTFIX_OFF");
+		return v && std::strstr(v, _name) != nullptr;
+	}
+}
 namespace dsp56k
 {
 	bool is56303(IPeripherals& _peripherals)
@@ -108,6 +142,9 @@ namespace dsp56k
 		// Serialize one additional command while a previous command is busy.
 		if(hostCommandBusy())
 		{
+			if(m_hostCommandHasQueued.load(std::memory_order_acquire))
+				std::fprintf(stderr, "HCLOST dsp=%p cycles=%llu old=%02x new=%02x\n", static_cast<void*>(&m_periph.getDSP()),
+					static_cast<unsigned long long>(m_periph.getDSP().getCycles()), m_hostCommandQueuedVba.load(), _vba);
 			// Publish the value before its availability flag.
 			m_hostCommandQueuedVba.store(_vba, std::memory_order_relaxed);
 			m_hostCommandHasQueued.store(true, std::memory_order_release);
@@ -129,6 +166,9 @@ namespace dsp56k
 
 	void HDI08::onInterruptDispatched(const TWord _vba)
 	{
+		if(g_hostLog && m_hostCommandPending.load(std::memory_order_acquire) && _vba == m_hostCommandVba.load(std::memory_order_relaxed))
+			hostLogRotate(); if(g_hostLog && g_hostLogOn) std::fprintf(g_hostLog, "DI %p %llu vba=%02x rxq=%zu\n", static_cast<void*>(&m_periph.getDSP()),
+				static_cast<unsigned long long>(m_periph.getDSP().getCycles()), _vba, m_dataRX.size());
 		if(!m_hostCommandPending.load(std::memory_order_acquire) ||
 			_vba != m_hostCommandVba.load(std::memory_order_relaxed))
 			return;
@@ -187,15 +227,20 @@ namespace dsp56k
 	{
 		pollHostCommandCompletion();
 
+		// EXPERIMENT: completion is only observed by polling, so poll at every block
+		// boundary while a command is in flight, independent of other wake-ups.
+		static const bool off = octfixOff("hdi");
+		const bool pollCompletion = !off && m_hostCommandInFlight.load(std::memory_order_relaxed);
+
 		if (!bittest(m_hpcr, HPCR_HEN))
-			return IPeripherals::MaxDelayCycles;
+			return pollCompletion ? 0 : IPeripherals::MaxDelayCycles;
 
 		// DMA service is cycle-stealing and is not subject to the RX interrupt
 		// rate limit (DSP56300FM section 10).
 		if(m_hostCommandArbitration && !m_dataRX.empty() && hasDmaReceiveTrigger() && !rxInterruptEnabled())
 		{
 			dmaTriggerReceive();
-			return m_dataRX.empty() ? IPeripherals::MaxDelayCycles : 0;
+			return (m_dataRX.empty() && !pollCompletion) ? IPeripherals::MaxDelayCycles : 0;
 		}
 
 		if (!m_waitServeRXInterrupt && !m_dataRX.empty() && (rxInterruptEnabled() || hasDmaReceiveTrigger()))
@@ -213,7 +258,7 @@ namespace dsp56k
 //				LOG("Wait serve interrupt");
 				return 0;
 			}
-			return static_cast<uint32_t>(m_rxRateLimit - d);
+			return pollCompletion ? 0 : static_cast<uint32_t>(m_rxRateLimit - d);
 		}
 		if(m_transmitDataAlwaysEmpty)
 		{
@@ -254,7 +299,7 @@ namespace dsp56k
 			}
 		}
 
-		return IPeripherals::MaxDelayCycles;
+		return pollCompletion ? 0 : IPeripherals::MaxDelayCycles;
 	}
 
 	TWord HDI08::readRX(const Instruction _inst)
@@ -265,10 +310,18 @@ namespace dsp56k
 
 		// Preserve the retained HRX value while a command has priority.
 		if(hostCommandHoldActive())
+		{
+			if(g_hostLog)
+				hostLogRotate(); if(g_hostLog && g_hostLogOn) std::fprintf(g_hostLog, "DH %p %llu pc=%06x val=%06x rxq=%zu\n", static_cast<void*>(&m_periph.getDSP()),
+					static_cast<unsigned long long>(m_periph.getDSP().getCycles()), m_periph.getDSP().getPC().toWord(), m_lastRXValue, m_dataRX.size());
 			return m_lastRXValue;
+		}
 
 		if (m_dataRX.empty())
 		{
+			if(g_hostLog)
+				hostLogRotate(); if(g_hostLog && g_hostLogOn) std::fprintf(g_hostLog, "DE %p %llu pc=%06x val=%06x\n", static_cast<void*>(&m_periph.getDSP()),
+					static_cast<unsigned long long>(m_periph.getDSP().getCycles()), m_periph.getDSP().getPC().toWord(), m_lastRXValue);
 			LOG("Empty read, PC=" << HEX(m_periph.getDSP().getPC().toWord()) << ", processingMode=" << m_periph.getDSP().getProcessingMode());
 			m_waitServeRXInterrupt = false;
 			// Under arbitration, an empty HRX read returns its retained value.
@@ -289,6 +342,9 @@ namespace dsp56k
 			break;
 		default:
 			res = m_dataRX.pop_front();
+			if(g_hostLog)
+				hostLogRotate(); if(g_hostLog && g_hostLogOn) std::fprintf(g_hostLog, "DR %p %llu pc=%06x val=%06x\n", static_cast<void*>(&m_periph.getDSP()),
+					static_cast<unsigned long long>(m_periph.getDSP().getCycles()), m_periph.getDSP().getPC().toWord(), res);
 			m_waitServeRXInterrupt = false;
 			m_callbackRx();
 //			LOG("HDI08 RX = " << HEX(res) << " (pop)");

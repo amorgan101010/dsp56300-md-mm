@@ -1,9 +1,20 @@
+#include <cstdlib>
+#include <cstring>
 #include "interrupts.h"
 #include "peripherals.h"
 #include "dsp.h"
 
 #include "timers.h"
 
+namespace dsp56k
+{
+	// TEMPORARY toggle for bisecting the cadence fixes (not for commit).
+	inline bool octfixOff(const char* _name)
+	{
+		const char* v = std::getenv("OCTFIX_OFF");
+		return v && std::strstr(v, _name) != nullptr;
+	}
+}
 namespace dsp56k
 {
 	uint32_t Timers::exec() noexcept
@@ -21,9 +32,24 @@ namespace dsp56k
 		if(diff < m_timerupdateInterval)
 			return static_cast<uint32_t>(m_timerupdateInterval - diff);
 
-		const uint32_t diffDiv2 = static_cast<uint32_t>(diff >> 1);
+		// Advance in whole update intervals and keep the phase, so the timers see the
+		// same time steps however often the peripherals happen to be serviced.
+		static const bool off = octfixOff("timer");
+		if(off)
+		{
+			const uint32_t oldDiv2 = static_cast<uint32_t>(diff >> 1);
+			m_lastClock = clock;
+			execTimer(m_timers[0], 0, oldDiv2);
+			execTimer(m_timers[1], 1, oldDiv2);
+			execTimer(m_timers[2], 2, oldDiv2);
+			if(diff > m_timerupdateInterval<<1)
+				return 0;
+			return static_cast<uint32_t>((m_timerupdateInterval << 1) - diff);
+		}
+		const uint64_t elapsed = diff - diff % m_timerupdateInterval;
+		const uint32_t diffDiv2 = static_cast<uint32_t>(elapsed >> 1);
 
-		m_lastClock = clock;
+		m_lastClock += elapsed;
 
 //		m_prescalerClock ^= 1;
 //		m_tpcr -= m_prescalerClock;
@@ -35,9 +61,7 @@ namespace dsp56k
 		execTimer(m_timers[1], 1, diffDiv2);
 		execTimer(m_timers[2], 2, diffDiv2);
 
-		if(diff > m_timerupdateInterval<<1)
-			return 0;
-		return static_cast<uint32_t>((m_timerupdateInterval << 1) - diff);
+		return static_cast<uint32_t>(m_timerupdateInterval - (clock - m_lastClock));
 	}
 
 	void Timers::execTimer(Timer& _t, const uint32_t _index, uint32_t _cycles) const
