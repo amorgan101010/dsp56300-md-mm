@@ -1,3 +1,5 @@
+#include <cstdio>
+#include <cstdlib>
 #include "dma.h"
 
 // DSP56300FM.pdf chapter 10 (page 181 ff)
@@ -525,6 +527,23 @@ namespace dsp56k
 	void DmaChannel::memWrite(EMemArea _area, TWord _addr, TWord _value) const
 	{
 		auto& dsp = m_peripherals.getDSP();
+		// TEMPORARY (not for commit): OCTFIX_TRIGWATCH=1 reports Monomachine voice trigger words
+		// (frame word 32 at Y:$520/$620/$720) that a DMA frame overwrites before the audio routine
+		// consumed them. The audio routine clears the word to 0 when it starts the note.
+		static const bool trigWatch = std::getenv("OCTFIX_TRIGWATCH") != nullptr;
+		static const bool w728 = std::getenv("OCTFIX_W728") != nullptr;
+		if(w728 && _area == MemArea_Y && _addr == 0x728)
+			std::printf("W728 %llu %06x\n", static_cast<unsigned long long>(dsp.getCycles()), _value);
+		if(trigWatch && _area == MemArea_Y && (_addr == 0x520 || _addr == 0x620 || _addr == 0x720))
+		{
+			const auto old = dsp.memory().get(MemArea_Y, _addr);
+			if(_value == 1)
+				std::fprintf(stderr, "TRIGSET dsp=%p cycles=%llu addr=%x old=%x\n", static_cast<void*>(&dsp),
+					static_cast<unsigned long long>(dsp.getCycles()), _addr, old);
+			else if(old == 1)
+				std::fprintf(stderr, "TRIGLOST dsp=%p cycles=%llu addr=%x new=%x\n", static_cast<void*>(&dsp),
+					static_cast<unsigned long long>(dsp.getCycles()), _addr, _value);
+		}
 		if (isPeripheralAddr(_area, _addr))
 			dsp.getPeriph(_area)->write(_addr | 0xff0000, _value);
 		else if (_area == MemArea_P)

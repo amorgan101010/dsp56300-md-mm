@@ -1,3 +1,6 @@
+#include <cstdlib>
+#include <map>
+#include <cstring>
 // DSP 56300 family 24-bit DSP emulator
 
 #include "dsp.h"
@@ -40,6 +43,17 @@
 
 //
 
+namespace dsp56k
+{
+	void (*g_pcTraceHook)(const DSP*, uint32_t) = nullptr;
+	// TEMPORARY toggle for bisecting the cadence fixes (not for commit).
+	// Experimental cadence fixes are opt-in: OCTFIX_ON=irq,hdi,timer (any subset) enables them.
+	inline bool octfixOff(const char* _name)
+	{
+		const char* v = std::getenv("OCTFIX_ON");
+		return !v || std::strstr(v, _name) == nullptr;
+	}
+}
 namespace dsp56k
 {
 	constexpr bool g_traceSupported = false;
@@ -227,6 +241,39 @@ namespace dsp56k
 
 	void DSP::execInterrupt(const TWord vba)
 	{
+		// TEMPORARY diagnostic (not for commit): OCTFIX_VECCENSUS=1 counts serviced vectors per DSP.
+		{
+			static const bool census = std::getenv("OCTFIX_VECCENSUS") != nullptr;
+			struct Census
+			{
+				struct Entry { uint64_t count = 0, first = 0, last = 0; TWord iprc = 0, iprp = 0; };
+				std::map<const DSP*, std::map<TWord, Entry>> counts;
+				~Census()
+				{
+					for(const auto& [dsp, m] : counts)
+						for(const auto& [v, e] : m)
+							std::fprintf(stderr, "VECCENSUS dsp=%p vba=%02x count=%llu first=%llu last=%llu iprc=%06x iprp=%06x\n", static_cast<const void*>(dsp), v,
+								static_cast<unsigned long long>(e.count), static_cast<unsigned long long>(e.first), static_cast<unsigned long long>(e.last), e.iprc, e.iprp);
+				}
+			};
+			static Census s_census;
+			// OCTFIX_VECLOG=1: time-stamp DMA1/DMA4 ($1a/$20) and host-command ($0c-$14) vector entries.
+			static const bool vecLog = std::getenv("OCTFIX_VECLOG") != nullptr;
+			if(vecLog && (vba == 0x1a || vba == 0x20 || (vba >= 0x0c && vba <= 0x14)))
+				std::printf("VL %p %02x %llu\n", static_cast<const void*>(this), vba, static_cast<unsigned long long>(m_cycles));
+			if(census)
+			{
+				auto& e = s_census.counts[this][vba];
+				if(!e.count)
+					e.first = m_cycles;
+				++e.count;
+				e.last = m_cycles;
+				e.iprc = iprc();
+				e.iprp = iprp();
+			}
+		}
+		if(m_iprInterruptModel && vba < 256 && m_pendingHostCommands[vba >> 1])
+			--m_pendingHostCommands[vba >> 1];
 		pcCurrentInstruction = vba;
 		m_processingMode = FastInterrupt;
 
@@ -246,6 +293,7 @@ namespace dsp56k
 			LOGJITPC(vba);
 			const auto pc = getPC();
 			m_jit.getTrampoline().execOne(&reg, vba, m_jitEntries[vba]);
+
 			if(m_processingMode != LongInterrupt)
 			{
 				m_processingMode = DefaultPreventInterrupt;
@@ -553,11 +601,11 @@ namespace dsp56k
 	// _____________________________________________________________________________
 	// exec_do
 	//
-	bool DSP::do_exec( TWord _loopcount, TWord _addr )
+	bool DSP::do_exec( TWord _loopcount, TWord _addr, const bool _forever )
 	{
 	//	LOG( "DO BEGIN: " << (int)sc.var << ", loop flag = " << sr_test(SR_LF) );
 
-		if( !_loopcount )
+		if( !_forever && !_loopcount )
 		{
 			if( sr_test_noCache( SR_SC ) )
 				_loopcount = 65536;
@@ -572,13 +620,24 @@ namespace dsp56k
 		ssl(reg.lc);
 
 		reg.la.var = _addr;
-		reg.lc.var = _loopcount;
+
+		// DO FOREVER leaves LC alone, it never counts
+		if(!_forever)
+			reg.lc.var = _loopcount;
 
 		pushPCSR();
 
 		const auto stackCount = reg.sc.var;
-		
-		sr_set( SR_LF );
+
+		// SR_FV describes the loop that is starting: a counted DO nested in a DO FOREVER has to clear
+		// it or its loop end would never terminate either. do_end() restores both flags from the stack.
+		if(_forever)
+			sr_set( static_cast<CCRMask>(SR_LF | SR_FV) );
+		else
+		{
+			sr_clear( SR_FV );
+			sr_set( SR_LF );
+		}
 
 		if constexpr(!g_useJIT)
 			m_cycles += getOpcodeCycles(pcCurrentInstruction);
@@ -599,8 +658,23 @@ namespace dsp56k
 			if(reg.pc.var != (reg.la.var+1))
 				continue;
 
+			// The loop only ends when execution falls off its last instruction. Hardware decides that
+			// at the fetch of the word at LA, so a jump that merely lands at LA+1 does not count. The
+			// Nord Modular kernel has its IRQD handler right behind an idle DO FOREVER loop: the
+			// interrupt's JSR arrives at LA+1 and was taken for a loop end, which "returned" through
+			// the interrupt's stack frame and left the DSP in long-interrupt mode for good.
+			if(reg.pc.var != pcCurrentInstruction + m_currentOpLen)
+				continue;
+
 			if(!sr_test_noCache(SR_LF))
 				break;
+
+			// a forever loop never terminates on the counter, only ENDDO / BRKcc leave it
+			if(sr_test_noCache(SR_FV))
+			{
+				setPC(hiword(reg.ss[ssIndex()]));
+				continue;
+			}
 
 			if( reg.lc.var <= 1 )
 			{
@@ -622,8 +696,10 @@ namespace dsp56k
 	//
 	bool DSP::do_end()
 	{
-		// restore previous loop flag
+		// restore the enclosing loop's flags: do_exec() clears FV for a counted DO, so a DO nested in a
+		// DO FOREVER must get FV back here or the outer forever loop ends on its counter
 		sr_toggle( SR_LF, (ssl().var & SR_LF) != 0 );
+		sr_toggle( SR_FV, (ssl().var & SR_FV) != 0 );
 
 		// decrement SP twice, restoring old loop settings
 		decSP();
@@ -1340,6 +1416,10 @@ namespace dsp56k
 
 	bool DSP::injectInterrupt(uint32_t _interruptVectorAddress)
 	{
+		// A disabled source only sets its status flag; it never requests service (DSP56300FM Table 2-4).
+		if(m_iprInterruptModel && _interruptVectorAddress < Vba_End && interruptLevel(_interruptVectorAddress) < 0)
+			return false;
+
 		m_pendingInterrupts.push_back({_interruptVectorAddress});
 
 		if(m_interruptFunc == m_execPeripheralsFunc)
@@ -1363,11 +1443,39 @@ namespace dsp56k
 
 	bool DSP::isInterruptMasked(const TWord _vba) const
 	{
-		const auto minPrio = mr().var & 0x3;
+		const auto minPrio = static_cast<int>(mr().var & 0x3);
+
+		if(m_iprInterruptModel)
+		{
+			const auto level = interruptLevel(_vba);
+			return level < 0 || level < minPrio;
+		}
 
 		const auto prio = _vba < Vba_IRQA ? 3 : 2;
 
 		return prio < minPrio;
+	}
+
+	int DSP::interruptLevel(const TWord _vba) const
+	{
+		// IPL field: 00 disabled, 01/10/11 = IPL 0/1/2 (DSP56300FM Table 2-4).
+		const auto field = [](const TWord _reg, const uint32_t _shift) { return static_cast<int>((_reg >> _shift) & 3) - 1; };
+
+		// Host commands may use any vector; their level is the host port's (HPL, IPRP bits 1-0).
+		if(_vba < 256 && m_pendingHostCommands[_vba >> 1])
+			return field(iprp(), 0);
+
+		if(_vba < Vba_IRQA)
+			return 3;
+		if(_vba <= Vba_IRQD)
+		{
+			static constexpr uint32_t shift[4] = {0, 3, 6, 9};	// IAL, IBL, ICL, IDL (bit 2 of each is the trigger mode)
+			return field(iprc(), shift[(_vba - Vba_IRQA) >> 1]);
+		}
+		if(_vba >= Vba_DMAchannel0 && _vba <= Vba_DMAchannel5)
+			return field(iprc(), 12 + ((_vba - Vba_DMAchannel0) >> 1) * 2);
+
+		return 2;	// sources not modelled here keep the legacy fixed level
 	}
 
 	void DSP::injectExternalInterrupt(const TWord _vba)
@@ -1388,7 +1496,14 @@ namespace dsp56k
 		{
 			m_pendingExternalInterrupts.waitNotFull();
 		}
+		if(m_iprInterruptModel && _vba < 256)
+			++m_pendingHostCommands[_vba >> 1];
 		m_pendingExternalInterrupts.push_back(_vba);
+		// EXPERIMENT (single scheduler thread only): take the interrupt at the next block
+		// boundary instead of whenever the peripherals next happen to wake.
+		static const bool off = octfixOff("irq");
+		if(!off)
+			perif[0]->setDelayCycles(0);
 	}
 
 	void DSP::processExternalInterrupts()

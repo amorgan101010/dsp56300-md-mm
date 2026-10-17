@@ -81,6 +81,12 @@ namespace dsp56k
 		static_assert(!contains(g_nonVolatileGPs, g_dspPoolGps[0]), "first pool reg must be volatile");
 		static_assert(volatilesFirst(g_dspPoolGps, g_nonVolatileGPs), "GP pool registers must list all volatiles before the first non-volatile");
 		static_assert(volatilesFirst(g_dspPoolXmms, g_nonVolatileXMMs), "XMM pool registers must list all volatiles before the first non-volatile");
+#if defined(HAVE_ARM64)
+		static_assert(contains(g_nonVolatileGPs, regMemXBase) && contains(g_nonVolatileGPs, regMemYBase), "MMU bases must survive C++ calls");
+		static_assert(!contains(g_dspPoolGps, regMemXBase) && !contains(g_dspPoolGps, regMemYBase), "MMU bases must not enter the DSP register pool");
+		static_assert(!contains(g_regGPTemps, regMemXBase) && !contains(g_regGPTemps, regMemYBase), "MMU bases must not enter the scratch register pool");
+		static_assert(!regMemXBase.equals(regMemYBase) && !regMemXBase.equals(regDspPtr) && !regMemYBase.equals(regDspPtr), "persistent JIT pointers must be distinct");
+#endif
 	}
 #endif
 	constexpr bool g_traceOps = false;
@@ -108,6 +114,11 @@ namespace dsp56k
 	void funcRunCheckPMemWriteAndModeChange(JitDspPtr* _jit, const TWord _pc) noexcept
 	{
 		Jit::toJitPtr(_jit)->runCheckPMemWriteAndModeChange(_pc);
+	}
+
+	void funcRunCheckLoopRegs(JitDspPtr* _jit, const TWord _pc) noexcept
+	{
+		Jit::toJitPtr(_jit)->runCheckLoopRegs(_pc);
 	}
 
 	void funcRun(JitDspPtr* _jit, TWord _pc) noexcept
@@ -293,6 +304,56 @@ namespace dsp56k
 		checkModeChange();
 	}
 
+	void Jit::runCheckLoopRegs(const TWord _pc) noexcept
+	{
+		run(_pc);
+		checkLoopAddressChange();
+		checkModeChange();
+	}
+
+	/*	A block that wrote LA has ended. Loop ends are decided when blocks are compiled, from the DO
+		instruction's operand, and kept in the loop registry. Firmware may move the end of a running
+		loop by writing LA directly: the Nord Modular kernel parks its DSP in a DO FOREVER idle loop
+		and, when a patch is loaded, the host pushes a new LA through a host command so that the
+		patch's control-rate code, placed right behind the loop body, becomes part of the loop.
+		The blocks at the old end carry the loop-back, the ones at the new end do not: drop both,
+		re-register the loop, and the next execution compiles them for the loop as it is now.
+	*/
+	void Jit::checkLoopAddressChange() noexcept
+	{
+		const auto& r = m_dsp.regs();
+
+		if(!(r.sr.var & SR_LF))
+			return;
+
+		const TWord newEnd = (r.la.var & 0xffffff) + 1;
+
+		// the innermost active DO: the highest stack entry whose PC is the body start of a registered loop
+		for(int i = static_cast<int>(m_dsp.ssIndex()); i > 0; --i)
+		{
+			const TWord bodyStart = hiword(r.ss[i]).toWord();
+			const auto it = m_loops.find(bodyStart - 2);	// the registry keys loops by the DO instruction, two words in front of the body
+			if(it == m_loops.end())
+				continue;
+
+			const TWord oldEnd = it->second;
+			if(oldEnd == newEnd)
+				return;
+
+			LOG("Loop end moved by a write to LA: body start " << HEX(bodyStart) << ", end " << HEX(oldEnd) << " -> " << HEX(newEnd));
+
+			destroy(oldEnd - 1);
+			destroy(newEnd - 1);
+			destroy(bodyStart);
+
+			removeLoop(bodyStart - 2);
+
+			if(m_loopEnds.find(newEnd) == m_loopEnds.end())
+				addLoop(bodyStart - 2, newEnd);
+			return;
+		}
+	}
+
 	JitConfig Jit::getConfig(const TWord _pc) const
 	{
 		auto& globalConfig = getConfig();
@@ -319,6 +380,9 @@ namespace dsp56k
 				return &funcRunCheckPMemWriteAndModeChange;
 			return &funcRunCheckPMemWrite;
 		}
+
+		if(i.terminationReason == JitBlockInfo::TerminationReason::WriteLoopRegs)
+			return &funcRunCheckLoopRegs;
 
 		if(i.hasFlag(JitBlockInfo::Flags::ModeChange))
 			return &funcRunCheckModeChange;

@@ -232,7 +232,7 @@ namespace dsp56k
 		void op_Movec_S1D2(TWord op);
 		void op_Movec_xx(TWord op);
 		void op_Movem_ea(TWord op);
-		void op_Movem_aa(TWord op)				{ errNotImplemented(op); }
+		void op_Movem_aa(TWord op);
 		void op_Movep_ppea(TWord op);
 		void op_Movep_Xqqea(TWord op);
 		void op_Movep_Yqqea(TWord op);
@@ -485,11 +485,12 @@ namespace dsp56k
 		{
 		public:
 			CcrBatchUpdate(JitOps& _ops, CCRMask _mask);
+			CcrBatchUpdate(JitOps& _ops, CCRMask _mask, bool _allAssigned);
 			CcrBatchUpdate(JitOps& _ops, CCRMask _maskA, CCRMask _maskB);
 			CcrBatchUpdate(JitOps& _ops, CCRMask _maskA, CCRMask _maskB, CCRMask _maskC);
 			~CcrBatchUpdate();
 		private:
-			void initialize(CCRMask _mask) const;
+			void initialize(CCRMask _mask, bool _allAssigned) const;
 			JitOps& m_ops;
 		};
 		void ccr_update_ifZero(CCRBit _bit);
